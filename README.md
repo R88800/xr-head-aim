@@ -10,7 +10,8 @@ An [Omarchy](https://omarchy.org) bar widget with a small background service. It
 
 - **Low lag.** The glasses' IMU is read directly at about 115 Hz, with no generic smoothing filter. On fast moves the head speed is estimated from the latest three samples, so the aim follows the current motion rather than motion from half a sample ago. Output is written as soon as a sample arrives.
 - **Accurate mouse mode.** Mouse movement is exactly head movement × sensitivity. Fractions of a count carry over, so nothing is lost or added. It works in almost any mouse-aim game.
-- **Gamepad stick mode.** This creates a virtual Xbox-style pad and drives its right stick. It is linear in turn rate and skips the game's stick dead zone, the way Steam Input's "gyro to joystick camera" does.
+- **Your PS5 controller's right stick (optional).** With the controller bridge, a DualSense (USB or Bluetooth) shows up in every game as a plain Xbox 360 pad, and head aim is mixed into its real right stick, so the stick and your head work together. Rumble works, and the pad survives Bluetooth drops mid-game. When no controller is connected, head aim moves the mouse instead (**Auto** output, the default).
+- **Virtual pad mode.** This creates a virtual Xbox-style pad and drives its right stick. It is linear in turn rate and skips the game's stick dead zone, the way Steam Input's "gyro to joystick camera" does.
 - **Holds still when you do.** A small dead zone and tremor smoothing apply only to very slow, near-still motion, so real turns get no added lag. A precision curve makes slow, small head moves finer.
 - **Only in games.** By default it only acts while a Steam game window (`steam_app_*`) has focus, so it never moves your desktop pointer. You can add other window classes or exclude specific games.
 - **Live tuning from the bar.** Turn it on or off, pick the output mode, and adjust sensitivity, vertical ratio, precision, dead zone, smoothing and lag removal. Changes apply instantly.
@@ -44,6 +45,8 @@ An [Omarchy](https://omarchy.org) bar widget with a small background service. It
 
    It doesn't change anything else. Run `install.sh --autostart` if you want head aim to start at login.
 
+3. **Optional, PS5 controller:** the installer asks whether to set up the controller bridge (or run `install.sh --controller`). It installs a small system service (`xr-pad.service`, runs as root to read the controller) and a udev rule that hides the DualSense's own device from games, so they see exactly one Xbox pad. Don't run it alongside InputPlumber or another tool that also remaps the DualSense. `uninstall.sh` removes both and makes the controller visible again.
+
 ## Use
 
 - **Bar icon:** left-click opens the panel, middle-click turns it on or off, right-click recenters.
@@ -65,11 +68,11 @@ An [Omarchy](https://omarchy.org) bar widget with a small background service. It
 omarchy plugin remove io.github.r88800.xr-head-aim
 ```
 
-This removes the service and the udev rule, if it was added.
+This removes the services and udev rules it added, including the controller bridge.
 
 ## How it works
 
-XRLinuxDriver sends one UDP datagram per head pose to `127.0.0.1:<port>`. Each datagram holds six doubles (x, y, z, yaw, pitch, roll) followed by a frame counter. `xr_head_aim.py` turns the change in angle into a head speed, using time steps from the frame counter so network jitter adds no noise. It then shapes that speed (dead zone, tremor smoothing, precision curve, lag removal) and writes it to a virtual uinput mouse or gamepad. The bar widget talks to the service through `bin/xr-head-aim`.
+XRLinuxDriver sends one UDP datagram per head pose to `127.0.0.1:<port>`. Each datagram holds six doubles (x, y, z, yaw, pitch, roll) followed by a frame counter. `xr_head_aim.py` turns the change in angle into a head speed, using time steps from the frame counter so network jitter adds no noise. It then shapes that speed (dead zone, tremor smoothing, precision curve, lag removal) and sends it to the controller bridge (when a controller is connected), a virtual uinput mouse or a virtual gamepad. The bar widget talks to the service through `bin/xr-head-aim`.
 
 Run the tests with `python3 -m unittest test_xr_head_aim`. They need no glasses, uinput or Hyprland.
 
