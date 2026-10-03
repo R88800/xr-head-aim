@@ -40,6 +40,12 @@ dualsense() {   # paired over Bluetooth, or plugged in
   bluetoothctl devices 2>/dev/null | grep -q 'DualSense' ||
     ls /sys/bus/hid/devices 2>/dev/null | grep -qiE ':054C:(0CE6|0DF2)\.'
 }
+bridge_current() {
+  cmp -s "$here/controller/xr_pad.py" /usr/local/lib/xr-head-aim/xr_pad.py &&
+    [ "$(sed "s|@USER@|$(id -un)|" "$here/controller/xr-pad.service")" = "$(cat /etc/systemd/system/xr-pad.service 2>/dev/null)" ] &&
+    cmp -s "$here/controller/72-xr-pad.rules" /etc/udev/rules.d/72-xr-pad.rules &&
+    systemctl is-active --quiet xr-pad.service
+}
 need_driver=0; need_uinput=0; need_bridge=0
 driver_ok || need_driver=1
 [ -w /dev/uinput ] || need_uinput=1
@@ -49,7 +55,7 @@ fi
 
 [ $need_driver = 1 ] && todo "XRLinuxDriver: stream head poses instead of moving the mouse itself (2 lines in config.ini, backup kept)"
 [ $need_uinput = 1 ] && todo "udev rule so you can create the virtual mouse (/dev/uinput, sudo)"
-[ $need_bridge = 1 ] && todo "PS5 controller bridge: your DualSense becomes an Xbox pad in every game, head aim goes into its right stick (system service + udev rule, sudo)"
+[ $need_bridge = 1 ] && ! bridge_current && todo "PS5 controller bridge: your DualSense becomes an Xbox pad in every game, head aim goes into its right stick (system service + udev rule, sudo)"
 todo "background service for this session and every login (idles until the glasses stream)"
 if [ $yes = 0 ] && [ -t 0 ]; then
   read -r -p "  Set this up? [Y/n] " answer
@@ -78,15 +84,11 @@ if [ $need_bridge = 1 ]; then
   if systemctl is-active --quiet inputplumber 2>/dev/null; then
     todo "InputPlumber also manages the DualSense: turn it off with sudo systemctl disable --now inputplumber"
   fi
-  unit=$(sed "s|@USER@|$(id -un)|" "$here/controller/xr-pad.service")
-  if cmp -s "$here/controller/xr_pad.py" /usr/local/lib/xr-head-aim/xr_pad.py &&
-     [ "$unit" = "$(cat /etc/systemd/system/xr-pad.service 2>/dev/null)" ] &&
-     cmp -s "$here/controller/72-xr-pad.rules" /etc/udev/rules.d/72-xr-pad.rules &&
-     systemctl is-active --quiet xr-pad.service; then
+  if bridge_current; then
     ok "Controller bridge up to date"   # untouched: a restart would take the pad from a running game
   else
     sudo install -D -m 755 "$here/controller/xr_pad.py" /usr/local/lib/xr-head-aim/xr_pad.py
-    printf '%s\n' "$unit" | sudo install -m 644 /dev/stdin /etc/systemd/system/xr-pad.service
+    sed "s|@USER@|$(id -un)|" "$here/controller/xr-pad.service" | sudo install -m 644 /dev/stdin /etc/systemd/system/xr-pad.service
     sudo install -m 644 "$here/controller/72-xr-pad.rules" /etc/udev/rules.d/72-xr-pad.rules
     sudo udevadm control --reload
     sudo udevadm trigger --action=change --subsystem-match=input --subsystem-match=hidraw
