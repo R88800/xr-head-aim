@@ -5,8 +5,9 @@ import Quickshell.Io
 import qs.Ui
 import qs.Commons
 
-// XR Head Aim: XR glasses (via XRLinuxDriver) -> xr-head-aim.service -> mouse or
-// virtual gamepad, only while a game is focused.
+// XR Head Aim: XR glasses (via XRLinuxDriver) -> xr-head-aim.service -> controller
+// right stick (with the optional controller bridge), mouse or virtual gamepad, only
+// while a game is focused.
 // Left click opens the panel, middle click turns head aim on/off, right click
 // recenters. Sliders write ~/.config/xr-head-aim/settings.json through
 // `bin/xr-head-aim tune`, which the service reloads live.
@@ -21,12 +22,12 @@ Panel {
   property bool installed: true
   property var status: ({})
   property bool toggling: false
-  readonly property string outputMode: tuning.output === "gamepad" ? "gamepad" : "mouse"
+  readonly property string outputMode: tuning.output === "gamepad" || tuning.output === "mouse" ? tuning.output : "auto"
   readonly property string statusText: !installed ? "Not set up: run install.sh in the plugin folder"
     : !aimActive ? "Off"
     : status.paused ? "Paused"
     : !status.glasses ? "On · waiting for glasses (XRLinuxDriver)"
-    : status.game ? "On · aiming (" + outputMode + ")"
+    : status.game ? "On · aiming (" + (status.output === "controller" ? "controller stick" : status.output || outputMode) + ")"
     : "On · idle until a game is focused"
   property var tuning: ({})
 
@@ -40,9 +41,9 @@ Panel {
   property bool cursorActive: false
 
   readonly property var allSliders: [
-    { key: "mouse_sensitivity", only: "mouse", section: "SENSITIVITY", label: "Sensitivity",
+    { key: "mouse_sensitivity", only: "mouse", section: "SENSITIVITY", label: "Mouse sensitivity",
       hint: "Mouse counts per head degree (match it to your in-game mouse sensitivity)", min: 2, max: 200, step: 1, unit: "", digits: 0 },
-    { key: "gain", only: "gamepad", section: "SENSITIVITY", label: "Sensitivity",
+    { key: "gain", only: "gamepad", section: "SENSITIVITY", label: "Stick sensitivity",
       hint: "View degrees per head degree", min: 1, max: 10, step: 0.05, unit: "×", digits: 2 },
     { key: "vertical_ratio", section: "SENSITIVITY", label: "Vertical ratio",
       hint: "Up/down speed relative to left/right", min: 0.3, max: 1.5, step: 0.05, unit: "×", digits: 2 },
@@ -65,7 +66,7 @@ Panel {
     { key: "game_deadzone", only: "gamepad", section: "GAME", label: "Game stick dead zone",
       hint: "Must equal the game's look dead zone", min: 0, max: 0.3, step: 0.01, unit: "%", digits: 0, percent: true }
   ]
-  readonly property var sliders: allSliders.filter(function(spec) { return !spec.only || spec.only === root.outputMode })
+  readonly property var sliders: allSliders.filter(function(spec) { return !spec.only || root.outputMode === "auto" || spec.only === root.outputMode })
 
   // Pairs that must stay ordered (lower key, upper key).
   readonly property var orderedPairs: [
@@ -391,12 +392,13 @@ Panel {
             spacing: Style.space(6)
             Repeater {
               model: [
+                { id: "auto", label: "Auto", icon: "󰁨" },
                 { id: "mouse", label: "Mouse", icon: "󰍽" },
-                { id: "gamepad", label: "Gamepad stick", icon: "󰊴" }
+                { id: "gamepad", label: "Virtual pad", icon: "󰊴" }
               ]
               Button {
                 required property var modelData
-                width: (outputRow.width - outputRow.spacing) / 2
+                width: (outputRow.width - 2 * outputRow.spacing) / 3
                 iconText: modelData.icon
                 text: modelData.label
                 fontSize: Style.font.bodySmall

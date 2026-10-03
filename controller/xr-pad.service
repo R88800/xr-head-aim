@@ -1,0 +1,19 @@
+[Unit]
+Description=XR Head Aim controller bridge: PS5 DualSense as an Xbox pad, head aim on its right stick
+Documentation=https://github.com/R88800/xr-head-aim
+
+[Service]
+Environment=XR_PAD_USER=@USER@
+ExecStart=/usr/bin/python3 /usr/local/lib/xr-head-aim/xr_pad.py
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=xr-pad
+RuntimeDirectoryMode=0755
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+
+[Install]
+WantedBy=multi-user.target

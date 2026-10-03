@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
 # Set up XR Head Aim's background service. Run as your user (it asks for sudo only if
-# /dev/uinput needs a udev rule). Safe to rerun. Undo with ./uninstall.sh.
-#   ./install.sh            set up; head aim starts from the bar widget (or `bin/xr-head-aim start`)
-#   ./install.sh --autostart  also start it with every login
+# /dev/uinput needs a udev rule, or for the controller bridge). Safe to rerun.
+# Undo with ./uninstall.sh.
+#   ./install.sh               set up; head aim starts from the bar widget (or `bin/xr-head-aim start`)
+#   ./install.sh --autostart   also start it with every login
+#   ./install.sh --controller  also make a PS5 DualSense an Xbox pad with head aim on its
+#                              right stick (system service, asks for sudo)
 set -euo pipefail
+autostart=0; controller=ask
+for arg in "$@"; do
+  case $arg in
+    --autostart) autostart=1 ;;
+    --controller) controller=yes ;;
+    --no-controller) controller=no ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
 here=$(cd -- "$(dirname -- "$0")" && pwd)
 config=${XDG_CONFIG_HOME:-$HOME/.config}
 unit_dir=$config/systemd/user
@@ -76,10 +88,33 @@ ok "Settings: $config/xr-head-aim/settings.json (port $port)"
 mkdir -p "$unit_dir"
 sed "s|@DIR@|$here|g" "$here/xr-head-aim.service.in" > "$unit_dir/xr-head-aim.service"
 systemctl --user daemon-reload
-if [ "${1:-}" = --autostart ]; then
+if [ "$autostart" = 1 ]; then
   systemctl --user enable --now xr-head-aim.service
   ok "Service installed, starts with every login"
 else
   ok "Service installed (start it from the bar widget, middle-click, or: $here/bin/xr-head-aim start)"
 fi
+# Optional: PS5 DualSense as an Xbox pad, with head aim blended into its right stick
+# (otherwise head aim drives the mouse). Needs root: it reads the controller and hides
+# its own nodes so games don't see two controllers.
+if [ "$controller" = ask ] && [ -t 0 ] && [ ! -f /etc/systemd/system/xr-pad.service ]; then
+  read -r -p "  Use a PS5 controller as an Xbox pad with head aim on its right stick? [y/N] " answer
+  [[ ${answer:-n} =~ ^[Yy] ]] && controller=yes
+fi
+if [ "$controller" = yes ] || { [ "$controller" = ask ] && [ -f /etc/systemd/system/xr-pad.service ]; }; then
+  if systemctl is-active --quiet inputplumber 2>/dev/null; then
+    warn "InputPlumber is running and also manages the DualSense; disable it: sudo systemctl disable --now inputplumber"
+  fi
+  sudo install -D -m 755 "$here/controller/xr_pad.py" /usr/local/lib/xr-head-aim/xr_pad.py
+  sed "s|@USER@|$(id -un)|" "$here/controller/xr-pad.service" | sudo install -m 644 /dev/stdin /etc/systemd/system/xr-pad.service
+  sudo install -m 644 "$here/controller/72-xr-pad.rules" /etc/udev/rules.d/72-xr-pad.rules
+  sudo udevadm control --reload
+  sudo udevadm trigger --action=change --subsystem-match=input --subsystem-match=hidraw
+  sudo systemctl daemon-reload
+  sudo systemctl enable xr-pad.service >/dev/null 2>&1
+  sudo systemctl restart xr-pad.service
+  ok "Controller bridge running: a PS5 controller shows up as an Xbox pad whenever it connects"
+fi
 echo "Done. In-game: head right/up turns right/up. Aim only moves while a Steam game window is focused."
+[ -f /etc/systemd/system/xr-pad.service ] && echo "Head aim goes to the controller's right stick while it is connected, otherwise to the mouse."
+true

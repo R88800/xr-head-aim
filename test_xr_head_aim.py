@@ -1,5 +1,6 @@
 """Offline tests: no glasses, no uinput, no Hyprland needed."""
 import json
+import math
 import os
 import tempfile
 import unittest
@@ -120,6 +121,50 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(x.load_settings(self.path), x.DEFAULTS)
         self.path.write_text('{broken')
         self.assertEqual(x.load_settings(self.path), x.DEFAULTS)
+
+
+class ControllerTests(unittest.TestCase):
+    def test_auto_uses_the_controller_only_while_connected(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, 'MouseOut') as mouse:
+            state = Path(d) / 'state'
+            sock_path = Path(d) / 'head.sock'
+            with mock.patch.object(x, 'PAD_STATE', state), mock.patch.object(x, 'PAD_SOCKET', sock_path):
+                import socket
+                bridge = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                bridge.bind(str(sock_path))
+                bridge.settimeout(.5)
+                out = x.AutoOut()
+                out.send([10., 0.], .008, x.DEFAULTS)
+                self.assertEqual(out.kind, 'mouse')
+                mouse.return_value.send.assert_called_once()
+                state.write_text('{"connected": true}')
+                out.checked = 0.
+                out.send([10., 0.], .008, x.DEFAULTS)
+                self.assertEqual(out.kind, 'controller')
+                mouse.return_value.center.assert_called()      # leaving the mouse stops it
+                stick = [float(v) for v in bridge.recv(64).split()]
+                expected = x.stick_for_rate([10. * x.DEFAULTS['gain'], 0.], (165., 135.), x.DEFAULTS['game_deadzone'])
+                self.assertAlmostEqual(stick[0], expected[0], places=4)
+                state.write_text('{"connected": false}')
+                out.checked = 0.
+                out.send([10., 0.], .008, x.DEFAULTS)
+                self.assertEqual(out.kind, 'mouse')
+                self.assertEqual(bridge.recv(64).split(), [b'0.00000', b'0.00000'])   # stick released
+                out.close()
+                bridge.close()
+
+    def test_bridge_blend(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent / 'controller'))
+        import xr_pad
+        self.assertEqual(xr_pad.blend((.3, -.2), (0., 0.)), (.3, -.2))            # head off: physical as is
+        self.assertEqual(xr_pad.blend((.03, .02), (.5, 0.)), (.5, 0.))           # resting offset ignored
+        bx, by = xr_pad.blend((.6, 0.), (.5, 0.))
+        self.assertAlmostEqual(bx, .6 + .5 * .4)                                  # head fills the remaining room
+        self.assertAlmostEqual(math.hypot(*xr_pad.blend((1., 0.), (0., 1.))), 1.)  # never past full stick
+        self.assertEqual(xr_pad.parse_head(b'0.25 -2'), (.25, -1.))
+        self.assertIsNone(xr_pad.parse_head(b'nan 0'))
+        self.assertIsNone(xr_pad.parse_head(b'oops'))
 
 
 if __name__ == '__main__':

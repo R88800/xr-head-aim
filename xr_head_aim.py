@@ -4,8 +4,10 @@
 XRLinuxDriver (https://github.com/wheaney/XRLinuxDriver) streams the glasses' pose as UDP
 datagrams (6 doubles x, y, z, yaw, pitch, roll + a uint32 frame counter,
 NWU frame: yaw+ turns left, pitch+ looks down). This daemon turns head rotation into
-either relative mouse motion (any mouse-aim game; exact, no stick model) or a virtual
-gamepad's right stick, only while a game window is focused (Hyprland).
+relative mouse motion (any mouse-aim game; exact, no stick model) or a gamepad's right
+stick, only while a game window is focused (Hyprland). With the optional controller
+bridge (controller/xr_pad.py) the head aim goes into your real controller's right stick
+while it is connected, and to the mouse otherwise ('auto', the default).
 
   xr_head_aim.py run            the daemon (xr-head-aim.service)
   xr_head_aim.py state          one JSON status line (used by the bar widget)
@@ -31,6 +33,8 @@ from pathlib import Path
 CONFIG_DIR = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'xr-head-aim'
 SETTINGS_PATH = CONFIG_DIR / 'settings.json'
 STATE_PATH = Path(os.environ.get('XDG_RUNTIME_DIR', '/tmp')) / 'xr-head-aim.json'
+PAD_SOCKET = Path('/run/xr-pad/head.sock')   # controller bridge (optional, xr-pad.service)
+PAD_STATE = Path('/run/xr-pad/state')
 
 POSE = struct.Struct('=6d')
 FRAME = struct.Struct('=I')
@@ -39,7 +43,7 @@ STALE = .12   # s without poses before the output centers / stops
 
 DEFAULTS = {
     'port': 4242,               # XRLinuxDriver's pose-stream port (default 4242)
-    'output': 'mouse',          # 'mouse' or 'gamepad'
+    'output': 'auto',           # 'auto' (controller bridge if connected, else mouse), 'mouse' or 'gamepad'
     # Head speed shaping (head deg/s), shared by both outputs.
     'still_from': .05,          # below: no output (sensor noise), fading in up to still_to
     'still_to': 1.0,
@@ -65,7 +69,7 @@ DEFAULTS = {
     'excluded_classes': [],     # e.g. "steam_app_1145360" for a game without aiming
 }
 NUMERIC = {k for k, v in DEFAULTS.items() if isinstance(v, (int, float))}
-CHOICES = {'output': ('mouse', 'gamepad'), 'focus': ('steam', 'always')}
+CHOICES = {'output': ('auto', 'mouse', 'gamepad'), 'focus': ('steam', 'always')}
 
 
 def load_settings(path=SETTINGS_PATH):
@@ -237,6 +241,71 @@ class GamepadOut:
         self.ui.close()
 
 
+class ControllerOut:
+    """Right-stick head aim for the controller bridge (xr-pad.service), which blends it
+    with the physical stick. Sent on every pose: the bridge drops head aim after 0.25 s."""
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.sock.setblocking(False)
+
+    def send(self, rate, dt, s):
+        camera = [rate[0] * s['gain'], rate[1] * s['gain']]
+        self.write(stick_for_rate(camera, (s['game_full_rate'], s['game_full_rate_y']), s['game_deadzone']))
+
+    def write(self, stick):
+        try:
+            self.sock.sendto(f'{stick[0]:.5f} {stick[1]:.5f}'.encode(), str(PAD_SOCKET))
+        except OSError:
+            pass   # bridge restarting: the next pose tries again
+
+    def center(self):
+        self.write([0., 0.])
+
+    def close(self):
+        self.center()
+        self.sock.close()
+
+
+def controller_connected(path=None):
+    try:
+        return bool(json.loads((path or PAD_STATE).read_text()).get('connected'))
+    except (OSError, ValueError):
+        return False
+
+
+class AutoOut:
+    """Controller right stick while the bridge reports a connected controller, else mouse."""
+    def __init__(self):
+        self.mouse = MouseOut()
+        self.controller = ControllerOut()
+        self.checked = 0.
+        self.active = self.mouse
+
+    @property
+    def kind(self):
+        return 'controller' if self.active is self.controller else 'mouse'
+
+    def pick(self):
+        now = time.monotonic()
+        if now - self.checked >= .5:
+            self.checked = now
+            want = self.controller if controller_connected() else self.mouse
+            if want is not self.active:
+                self.active.center()
+                self.active = want
+        return self.active
+
+    def send(self, rate, dt, s):
+        self.pick().send(rate, dt, s)
+
+    def center(self):
+        self.pick().center()
+
+    def close(self):
+        self.controller.close()
+        self.mouse.close()
+
+
 def is_game(window, s):
     cls = str(window.get('class') or window.get('initialClass') or '')
     if not cls or cls in s['excluded_classes']:
@@ -270,7 +339,7 @@ class Focus(threading.Thread):
 
 
 def make_output(kind):
-    return GamepadOut() if kind == 'gamepad' else MouseOut()
+    return {'gamepad': GamepadOut, 'mouse': MouseOut}.get(kind, AutoOut)()
 
 
 def run():
@@ -295,7 +364,8 @@ def run():
     print(f"Listening for XRLinuxDriver poses on 127.0.0.1:{settings['port']} ({kind} output)", flush=True)
 
     def publish(now):
-        atomic_json(STATE_PATH, {'running': True, 'paused': flags['paused'], 'output': kind,
+        atomic_json(STATE_PATH, {'running': True, 'paused': flags['paused'],
+                                 'output': getattr(output, 'kind', kind),
                                  'glasses': now - last_pose < 1., 'game': focus.allowed(),
                                  'window': focus.window, 'pid': os.getpid()})
     try:

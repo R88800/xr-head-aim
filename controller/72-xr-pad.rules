@@ -1,0 +1,8 @@
+# XR Head Aim controller bridge (xr-pad.service): hide the PS5 DualSense's own device
+# nodes from user programs (Steam, SDL, browsers), so games see only the bridge's Xbox
+# pad. Root's bridge still reads them. Runs after the uaccess tags (60-steam-input,
+# 71-sony-gdu) and before 73-seat-late applies them. Removed by uninstall.sh.
+ACTION=="remove", GOTO="xr_pad_end"
+SUBSYSTEM=="input", ATTRS{id/vendor}=="054c", ATTRS{id/product}=="0ce6|0df2", TAG-="uaccess", MODE="0600"
+SUBSYSTEM=="hidraw", KERNELS=="*:054C:0CE6.*|*:054C:0DF2.*", TAG-="uaccess", MODE="0600"
+LABEL="xr_pad_end"
