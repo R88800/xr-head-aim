@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.r88800.xr-head-aim",
   "name": "XR Head Aim",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Riley",
   "description": "Aim in games by turning your head with XR glasses (VITURE, XREAL, Rokid, RayNeo via XRLinuxDriver): controller right stick or mouse, PS5 DualSense as an Xbox pad, tuned out of the box.",
   "kinds": [
