@@ -6,8 +6,8 @@ import qs.Ui
 import qs.Commons
 
 // XR Head Aim: XR glasses (via XRLinuxDriver) -> xr-head-aim.service -> the
-// controller's right stick while one is connected, otherwise the mouse; only while a
-// game is focused. Left click opens the panel, middle click turns head aim on/off,
+// controller's right stick or the mouse (Auto picks the stick while a controller is
+// connected); only while a game is focused. One sensitivity for every output. Left click opens the panel, middle click turns head aim on/off,
 // right click recenters. Everything writes ~/.config/xr-head-aim/settings.json through
 // `bin/xr-head-aim`, which the service applies within a second.
 Panel {
@@ -26,7 +26,7 @@ Panel {
     : !status.running ? "Service not running: rerun install.sh"
     : !aimOn ? "Off"
     : !status.glasses ? "On · waiting for glasses"
-    : status.game ? "On · aiming with the " + (status.output === "controller" ? "controller stick" : "mouse")
+    : status.game ? "On · aiming with the " + (status.output === "mouse" ? "mouse" : status.output === "virtual pad" ? "virtual pad" : "controller stick")
     : "On · idle until a game is focused"
   property var tuning: ({})
 
@@ -42,10 +42,8 @@ Panel {
   // The essentials first; everything else is under Advanced. Defaults are tuned on
   // recorded play, so most people never open it.
   readonly property var allSliders: [
-    { key: "gain", needsBridge: true, label: "Controller sensitivity",
-      hint: "View degrees per head degree", min: 1, max: 10, step: 0.05, unit: "×", digits: 2 },
-    { key: "mouse_sensitivity", label: "Mouse sensitivity",
-      hint: "Mouse counts per head degree (match your in-game mouse sensitivity)", min: 2, max: 200, step: 1, unit: "", digits: 0 },
+    { key: "gain", label: "Sensitivity",
+      hint: "View degrees per head degree, the same on controller and mouse", min: 1, max: 10, step: 0.05, unit: "×", digits: 2 },
     { key: "vertical_ratio", label: "Vertical ratio",
       hint: "Up/down speed relative to left/right", min: 0.3, max: 1.5, step: 0.05, unit: "×", digits: 2 },
     { key: "precision", advanced: true, section: "PRECISION", label: "Slow-motion precision",
@@ -64,14 +62,15 @@ Panel {
       hint: "Head speed with zero smoothing (zero lag)", min: 0.1, max: 10, step: 0.1, unit: "°/s", digits: 1 },
     { key: "predict", advanced: true, section: "SMOOTHING", label: "Lag removal",
       hint: "Fast moves use the newest head rate (~4 ms less lag)", min: 0, max: 1, step: 0.05, unit: "%", digits: 0, percent: true },
-    { key: "game_full_rate", advanced: true, needsBridge: true, section: "GAME (CONTROLLER)", label: "Game turn speed",
+    { key: "game_full_rate", advanced: true, section: "GAME (CONTROLLER)", label: "Game turn speed",
       hint: "How fast the game turns at full stick", min: 60, max: 600, step: 5, unit: "°/s", digits: 0 },
-    { key: "game_deadzone", advanced: true, needsBridge: true, section: "GAME (CONTROLLER)", label: "Game stick dead zone",
-      hint: "Set it to the game's look dead zone", min: 0, max: 0.3, step: 0.01, unit: "%", digits: 0, percent: true }
+    { key: "game_deadzone", advanced: true, section: "GAME (CONTROLLER)", label: "Game stick dead zone",
+      hint: "Set it to the game's look dead zone", min: 0, max: 0.3, step: 0.01, unit: "%", digits: 0, percent: true },
+    { key: "game_mouse_deg", advanced: true, section: "GAME (MOUSE)", label: "Game mouse speed",
+      hint: "View degrees per mouse count (Source games: 0.022 × in-game sensitivity)", min: 0.005, max: 1, step: 0.001, unit: "°", digits: 3 }
   ]
-  readonly property var sliders: allSliders.filter(function(spec) {
-    return (!spec.needsBridge || root.status.bridge) && (!spec.advanced || root.showAdvanced)
-  })
+  readonly property var sliders: allSliders.filter(function(spec) { return !spec.advanced || root.showAdvanced })
+  readonly property string outputMode: overrides.output || tuning.output || "auto"
 
   // Pairs that must stay ordered (lower key, upper key).
   readonly property var orderedPairs: [
@@ -92,8 +91,8 @@ Panel {
 
   function snap(key, v) {
     if (key === "invert_y") return v
-    for (var i = 0; i < sliders.length; i++) {
-      var spec = sliders[i]
+    for (var i = 0; i < allSliders.length; i++) {
+      var spec = allSliders[i]
       if (spec.key !== key) continue
       v = Math.round(v / spec.step) * spec.step
       return Number(Math.max(spec.min, Math.min(spec.max, v)).toFixed(4))
@@ -136,6 +135,12 @@ Panel {
   function toggleAim() {
     var o = Object.assign({}, overrides); o.enabled = aimOn ? 0 : 1; overrides = o
     toggleProc.running = true
+  }
+
+  function setOutput(mode) {
+    var o = Object.assign({}, overrides); o.output = mode; overrides = o
+    var p = Object.assign({}, pending); p.output = mode; pending = p
+    writeDebounce.restart()
   }
 
   function toggleInvert() {
@@ -366,6 +371,32 @@ Panel {
               bordered: true
               active: root.value("invert_y") === 1
               onClicked: root.toggleInvert()
+            }
+          }
+
+          // ---------- Output ----------
+          Row {
+            id: outputRow
+            width: parent.width
+            spacing: Style.space(6)
+            Repeater {
+              model: [
+                { id: "auto", label: "Auto", icon: "󰁨" },
+                { id: "controller", label: "Controller", icon: "󰊴" },
+                { id: "mouse", label: "Mouse", icon: "󰍽" }
+              ]
+              Button {
+                required property var modelData
+                width: (outputRow.width - 2 * outputRow.spacing) / 3
+                iconText: modelData.icon
+                text: modelData.label
+                fontSize: Style.font.bodySmall
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                bordered: true
+                active: root.outputMode === modelData.id
+                onClicked: root.setOutput(modelData.id)
+              }
             }
           }
 

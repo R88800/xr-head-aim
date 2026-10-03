@@ -3,11 +3,13 @@
 
 XRLinuxDriver streams the glasses' pose to 127.0.0.1:4242 (six doubles x, y, z, yaw,
 pitch, roll and a uint32 frame counter; yaw+ turns left, pitch+ looks down). This daemon
-turns head rotation into aim while a game window has focus:
+turns head rotation into aim while a game window has focus. One sensitivity (view
+degrees per head degree) applies to every output:
 
-- into your controller's right stick, through the controller bridge
-  (controller/xr_pad.py), while a controller is connected
-- into the mouse otherwise
+- auto (default): your controller's right stick while one is connected (through the
+  controller bridge, controller/xr_pad.py), otherwise the mouse
+- controller: always a right stick (the bridge's, or a virtual pad without the bridge)
+- mouse: always the mouse
 
 It runs for the whole session and idles until the glasses stream. On/off is a setting,
 so it survives restarts.
@@ -48,8 +50,8 @@ STALE = .12                    # s without poses before aim stops
 # Tuned on recorded play with a VITURE Luma Pro. Only the first block is a matter of taste.
 DEFAULTS = {
     'enabled': 1,
-    'gain': 5.9,                # controller: view degrees per head degree
-    'mouse_sensitivity': 40.0,  # mouse: counts per head degree (match your in-game sensitivity)
+    'output': 'auto',           # 'auto', 'controller' or 'mouse'
+    'gain': 5.9,                # view degrees per head degree, the same for every output
     'vertical_ratio': .9,       # up/down relative to left/right
     'invert_y': 0,
     # Advanced: how head speed (deg/s) is shaped.
@@ -61,14 +63,16 @@ DEFAULTS = {
     'precision': .6,            # slow moves get this share of the sensitivity...
     'precision_to': 8.0,        # ...rising to full by this head speed
     'predict': 1.0,             # fast moves: 3-pose rate estimate (~4 ms less lag)
-    # Advanced: the game's stick response.
-    'game_full_rate': 165.0,    # view deg/s at full stick
-    'game_deadzone': .06,       # the game's look dead zone (skipped)
+    # Advanced: how the game turns, so a head degree is the same view turn on every output.
+    'game_full_rate': 165.0,    # controller: view deg/s at full stick
+    'game_deadzone': .06,       # controller: the game's look dead zone (skipped)
+    'game_mouse_deg': .15,      # mouse: view degrees per mouse count (Source games: 0.022 x sensitivity)
     # Window classes: extra games (non-Steam), and games to leave alone.
     'extra_classes': [],
     'excluded_classes': [],
 }
 LISTS = ('extra_classes', 'excluded_classes')
+OUTPUTS = ('auto', 'controller', 'mouse')
 KEPT_ON_RESET = ('enabled', *LISTS)
 
 
@@ -87,7 +91,10 @@ def load_settings(path=None):
     for key, value in saved.items():
         if key in LISTS and isinstance(value, list):
             settings[key] = [str(v) for v in value]
-        elif key in DEFAULTS and key not in LISTS and isinstance(value, (int, float)) \
+        elif key == 'output':
+            if value in OUTPUTS:
+                settings[key] = value
+        elif key in DEFAULTS and key not in LISTS and key != 'output' and isinstance(value, (int, float)) \
                 and not isinstance(value, bool):
             settings[key] = type(DEFAULTS[key])(value)
     return settings
@@ -116,6 +123,12 @@ def tune(args):
             return 2
         if key in LISTS:
             settings[key] = [v for v in value.split(',') if v]
+            continue
+        if key == 'output':
+            if value not in OUTPUTS:
+                print(f"output must be one of: {', '.join(OUTPUTS)}", file=sys.stderr)
+                return 2
+            settings[key] = value
             continue
         try:
             settings[key] = type(DEFAULTS[key])(float(value))
@@ -216,6 +229,11 @@ def stick_for_rate(rate, full_rate, deadzone):
 
 # -- where aim goes ----------------------------------------------------------------------
 
+def view_rate(rate, s):
+    """Head rate -> view rate (deg/s): the one sensitivity every output shares."""
+    return [rate[0] * s['gain'], rate[1] * s['gain']]
+
+
 class Mouse:
     """Relative mouse; sub-count remainders carry over, so total motion is exact."""
     def __init__(self):
@@ -227,8 +245,8 @@ class Mouse:
 
     def aim(self, rate, dt, s):
         moved = False
-        for i, code in enumerate((self.e.REL_X, self.e.REL_Y)):
-            self.remainder[i] += rate[i] * s['mouse_sensitivity'] * dt
+        for i, (code, view) in enumerate(zip((self.e.REL_X, self.e.REL_Y), view_rate(rate, s))):
+            self.remainder[i] += view * dt / max(1e-4, s['game_mouse_deg'])
             whole = int(self.remainder[i])
             if whole:
                 self.remainder[i] -= whole
@@ -252,8 +270,7 @@ class ControllerStick:
         self.sock.setblocking(False)
 
     def aim(self, rate, dt, s):
-        view = [rate[0] * s['gain'], rate[1] * s['gain']]
-        self.send(stick_for_rate(view, s['game_full_rate'], s['game_deadzone']))
+        self.send(stick_for_rate(view_rate(rate, s), s['game_full_rate'], s['game_deadzone']))
 
     def send(self, stick):
         try:
@@ -269,6 +286,40 @@ class ControllerStick:
         self.sock.close()
 
 
+class VirtualPad:
+    """Controller output without the bridge: a virtual Xbox-style pad whose right stick
+    carries the head aim (games may see it as a second controller)."""
+    def __init__(self):
+        from evdev import UInput, AbsInfo, ecodes as e
+        self.e = e
+        axes = [(c, AbsInfo(0, -32768, 32767, 16, 128, 0)) for c in (e.ABS_X, e.ABS_Y, e.ABS_RX, e.ABS_RY)]
+        self.ui = UInput({e.EV_KEY: [e.BTN_SOUTH, e.BTN_EAST, e.BTN_NORTH, e.BTN_WEST, e.BTN_START, e.BTN_SELECT],
+                          e.EV_ABS: axes}, name='XR Head Aim Pad', vendor=0x045e, product=0x028e, version=0x110)
+        self.last = None
+
+    def aim(self, rate, dt, s):
+        self.send(stick_for_rate(view_rate(rate, s), s['game_full_rate'], s['game_deadzone']))
+
+    def send(self, stick):
+        value = tuple(round(max(-1., min(1., v)) * 32767) for v in stick)
+        if value != self.last:
+            self.last = value
+            self.ui.write(self.e.EV_ABS, self.e.ABS_RX, value[0])
+            self.ui.write(self.e.EV_ABS, self.e.ABS_RY, value[1])
+            self.ui.syn()
+
+    def stop(self):
+        self.send([0., 0.])
+
+    def close(self):
+        self.stop()
+        self.ui.close()
+
+
+def bridge_installed():
+    return BRIDGE.is_dir()
+
+
 def controller_connected():
     try:
         return bool(json.loads((BRIDGE / 'state').read_text()).get('connected'))
@@ -277,38 +328,57 @@ def controller_connected():
 
 
 class Output:
-    """The controller's right stick while one is connected, the mouse otherwise."""
-    def __init__(self):
-        self.mouse = Mouse()
-        self.stick = ControllerStick()
-        self.target = self.mouse
+    """Sends aim where the output setting says. Devices are created only when used, so
+    no stray virtual pad or mouse exists for games to pick up."""
+    NAMES = {Mouse: 'mouse', ControllerStick: 'controller', VirtualPad: 'virtual pad'}
+
+    def __init__(self, settings):
+        self.s = settings
+        self.devices = {}
+        self.kind = self.target = None
         self.checked = 0.
 
     @property
     def name(self):
-        return 'controller' if self.target is self.stick else 'mouse'
+        return self.NAMES.get(self.kind, 'none')
 
-    def follow_controller(self):
+    def wanted(self):
+        mode = self.s['output']
+        if mode == 'mouse':
+            return Mouse
+        if mode == 'controller':
+            return ControllerStick if bridge_installed() else VirtualPad
+        return ControllerStick if controller_connected() else Mouse
+
+    def follow(self):
         now = time.monotonic()
-        if now - self.checked < .5:
+        if now - self.checked < .5 and self.target is not None:
             return
         self.checked = now
-        target = self.stick if controller_connected() else self.mouse
-        if target is not self.target:
+        kind = self.wanted()
+        if kind is self.kind:
+            return
+        if self.target is not None:
             self.target.stop()
-            self.target = target
+        if kind is not VirtualPad:   # a leftover virtual pad would confuse games
+            pad = self.devices.pop(VirtualPad, None)
+            if pad:
+                pad.close()
+        if kind not in self.devices:
+            self.devices[kind] = kind()
+        self.kind, self.target = kind, self.devices[kind]
 
-    def aim(self, rate, dt, s):
-        self.follow_controller()
-        self.target.aim(rate, dt, s)
+    def aim(self, rate, dt):
+        self.follow()
+        self.target.aim(rate, dt, self.s)
 
     def stop(self):
-        self.follow_controller()
+        self.follow()
         self.target.stop()
 
     def close(self):
-        self.stick.close()
-        self.mouse.close()
+        for device in self.devices.values():
+            device.close()
 
 
 # -- only in games -----------------------------------------------------------------------
@@ -371,7 +441,7 @@ def run():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('127.0.0.1', PORT))
     sock.setblocking(False)
-    output = Output()
+    output = Output(settings)
     focus = GameFocus(settings)
     focus.start()
     head = HeadRate(settings)
@@ -419,7 +489,7 @@ def run():
                 output.stop()
                 continue
             rate = head.step(angles, frame, now)
-            output.aim(rate, head.dt, settings)   # head.dt: mouse motion = head motion, exactly
+            output.aim(rate, head.dt)   # head.dt: mouse motion = head motion, exactly
     finally:
         focus.stopped.set()
         output.close()
@@ -436,7 +506,7 @@ def state():
         data = {'running': False}
     data['settings'] = load_settings()
     data['enabled'] = bool(data['settings']['enabled'])
-    data['bridge'] = BRIDGE.is_dir()
+    data['bridge'] = bridge_installed()
     unit = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'systemd' / 'user' / 'xr-head-aim.service'
     data['installed'] = unit.exists()
     print(json.dumps(data))

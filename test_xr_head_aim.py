@@ -85,7 +85,7 @@ class MouseTests(unittest.TestCase):
         out.e = mock.Mock(REL_X=0, REL_Y=1, EV_REL=2)
         out.ui = mock.Mock()
         out.remainder = [0., 0.]
-        s = dict(x.DEFAULTS, mouse_sensitivity=40.)
+        s = dict(x.DEFAULTS, gain=4., game_mouse_deg=.1)   # 40 counts per head degree
         for _ in range(100):
             out.aim([3.3, -1.1], .0087, s)   # 3.3 deg/s for 0.87 s
         sent = [0, 0]
@@ -93,6 +93,20 @@ class MouseTests(unittest.TestCase):
             sent[call.args[1]] += call.args[2]
         self.assertAlmostEqual(sent[0] + out.remainder[0], 3.3 * .87 * 40., places=6)
         self.assertAlmostEqual(sent[1] + out.remainder[1], -1.1 * .87 * 40., places=6)
+
+    def test_same_sensitivity_on_every_output(self):
+        s = dict(x.DEFAULTS, gain=4., game_mouse_deg=.05, game_full_rate=200., game_deadzone=0.)
+        self.assertEqual(x.view_rate([10., -5.], s), [40., -20.])
+        # mouse: 40 deg/s of view for 1 s = 800 counts at 0.05 deg/count
+        mouse = x.Mouse.__new__(x.Mouse)
+        mouse.e = mock.Mock(REL_X=0, REL_Y=1, EV_REL=2)
+        mouse.ui = mock.Mock()
+        mouse.remainder = [0., 0.]
+        for _ in range(100):
+            mouse.aim([10., 0.], .01, s)
+        self.assertEqual(sum(c.args[2] for c in mouse.ui.write.call_args_list if c.args[1] == 0), 800)
+        # stick: 40 deg/s of view at a 200 deg/s full-stick game = 20% stick
+        self.assertAlmostEqual(x.stick_for_rate(x.view_rate([10., 0.], s), 200., 0.)[0], .2)
 
 
 class SettingsTests(unittest.TestCase):
@@ -112,6 +126,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((s['gain'], s['invert_y'], s['excluded_classes']), (6.5, 1, ['steam_app_1', 'steam_app_2']))
         self.assertEqual(x.tune(['gain=fast']), 2)
         self.assertEqual(x.tune(['nope=1']), 2)
+        self.assertEqual(x.tune(['output=keyboard']), 2)
+        self.assertEqual(x.tune(['output=controller']), 0)
+        self.assertEqual(x.load_settings(self.path)['output'], 'controller')
 
     def test_reset_keeps_on_off_and_game_lists(self):
         x.tune(['gain=9', 'enabled=0', 'extra_classes=heroic'])
@@ -129,43 +146,78 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(x.load_settings(self.path)['enabled'], 0)
 
     def test_old_and_bad_values_are_ignored(self):
-        self.path.write_text(json.dumps({'gain': 'fast', 'output': 'gamepad', 'port': 4244, 'focus': 'always',
+        self.path.write_text(json.dumps({'gain': 'fast', 'output': 'gamepad', 'port': 4244, 'focus': 'always', 'mouse_sensitivity': 48,
                                          'still_to': True, 'vertical_ratio': 1}))
         self.assertEqual(x.load_settings(self.path), dict(x.DEFAULTS, vertical_ratio=1.))
         self.path.write_text('{broken')
         self.assertEqual(x.load_settings(self.path), x.DEFAULTS)
 
 
-class ControllerTests(unittest.TestCase):
-    def test_aim_uses_the_controller_only_while_connected(self):
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, 'Mouse') as mouse:
-            state = Path(d) / 'state'
-            sock_path = Path(d) / 'head.sock'
-            with mock.patch.object(x, 'BRIDGE', Path(d)):
-                import socket
-                bridge = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                bridge.bind(str(sock_path))
-                bridge.settimeout(.5)
-                out = x.Output()
-                out.aim([10., 0.], .008, x.DEFAULTS)
-                self.assertEqual(out.name, 'mouse')
-                mouse.return_value.aim.assert_called_once()
-                state.write_text('{"connected": true}')
-                out.checked = 0.
-                out.aim([10., 0.], .008, x.DEFAULTS)
-                self.assertEqual(out.name, 'controller')
-                mouse.return_value.stop.assert_called()      # leaving the mouse stops it
-                stick = [float(v) for v in bridge.recv(64).split()]
-                expected = x.stick_for_rate([10. * x.DEFAULTS['gain'], 0.], 165., x.DEFAULTS['game_deadzone'])
-                self.assertAlmostEqual(stick[0], expected[0], places=4)
-                state.write_text('{"connected": false}')
-                out.checked = 0.
-                out.aim([10., 0.], .008, x.DEFAULTS)
-                self.assertEqual(out.name, 'mouse')
-                self.assertEqual(bridge.recv(64).split(), [b'0.00000', b'0.00000'])   # stick released
-                out.close()
-                bridge.close()
+class OutputTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.bridge = Path(self.dir.name)
+        self.patches = [mock.patch.object(x, 'BRIDGE', self.bridge),
+                        mock.patch.object(x, 'Mouse', type('Mouse', (mock.Mock,), {})),
+                        mock.patch.object(x, 'VirtualPad', type('VirtualPad', (mock.Mock,), {}))]
+        for p in self.patches:
+            p.start()
+        x.Output.NAMES = {x.Mouse: 'mouse', x.ControllerStick: 'controller', x.VirtualPad: 'virtual pad'}
 
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        x.Output.NAMES = {x.Mouse: 'mouse', x.ControllerStick: 'controller', x.VirtualPad: 'virtual pad'}
+        self.dir.cleanup()
+
+    def output(self, mode):
+        out = x.Output(dict(x.DEFAULTS, output=mode))
+        out.follow()
+        return out
+
+    def connect(self, connected):
+        (self.bridge / 'state').write_text(json.dumps({'connected': connected}))
+
+    def test_auto_follows_the_controller(self):
+        import socket
+        bridge = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        bridge.bind(str(self.bridge / 'head.sock'))
+        bridge.settimeout(.5)
+        out = self.output('auto')
+        self.assertEqual(out.name, 'mouse')
+        self.connect(True)
+        out.checked = 0.
+        out.aim([10., 0.], .008)
+        self.assertEqual(out.name, 'controller')
+        stick = [float(v) for v in bridge.recv(64).split()]
+        expected = x.stick_for_rate([10. * x.DEFAULTS['gain'], 0.], 165., x.DEFAULTS['game_deadzone'])
+        self.assertAlmostEqual(stick[0], expected[0], places=4)
+        self.connect(False)
+        out.checked = 0.
+        out.aim([10., 0.], .008)
+        self.assertEqual(out.name, 'mouse')
+        self.assertEqual(bridge.recv(64).split(), [b'0.00000', b'0.00000'])   # stick released
+        out.close()
+        bridge.close()
+
+    def test_controller_mode_uses_the_bridge_or_a_virtual_pad(self):
+        self.assertEqual(self.output('controller').name, 'controller')
+        self.bridge.rmdir()
+        self.assertEqual(self.output('controller').name, 'virtual pad')
+        self.assertEqual(self.output('mouse').name, 'mouse')
+
+    def test_leaving_controller_mode_removes_the_virtual_pad(self):
+        self.bridge.rmdir()
+        out = self.output('controller')
+        pad = out.target
+        out.s['output'] = 'mouse'
+        out.checked = 0.
+        out.follow()
+        self.assertEqual(out.name, 'mouse')
+        pad.close.assert_called_once()
+        self.assertNotIn(x.VirtualPad, out.devices)
+
+class ControllerTests(unittest.TestCase):
     def test_bridge_blend(self):
         import sys
         sys.path.insert(0, str(Path(__file__).parent / 'controller'))

@@ -9,11 +9,11 @@ An [Omarchy](https://omarchy.org) bar widget with a small background service. It
 ## What it does
 
 - **Just works.** It runs in the background all session and only acts while a game window has focus and the glasses are streaming. Put on the glasses, focus a game, aim.
-- **Your controller's right stick, or the mouse.** With a PS5 controller connected, head aim is mixed into its real right stick, so your thumb and your head work together. Without one, head aim moves the mouse. It switches by itself.
+- **Your controller's right stick, or the mouse.** With a PS5 controller connected, head aim is mixed into its real right stick, so your thumb and your head work together. Without one, head aim moves the mouse. *Auto* switches by itself; pick *Controller* or *Mouse* to force one (Controller mode without a PS5 controller bridge uses a virtual pad).
 - **PS5 controller as an Xbox pad.** The installer sets this up if you have a DualSense: it shows up in every game as a plain Xbox 360 controller (USB or Bluetooth) with the Xbox button layout, analog triggers and rumble, and it survives Bluetooth drops mid-game.
 - **Low lag.** The glasses' IMU is read directly at about 115 Hz. Fast moves use the newest head rate (a 3-sample estimate), and output is sent as soon as a sample arrives.
 - **Holds still when you do.** A small dead zone and tremor smoothing apply only to very slow, near-still motion, so real turns get no added lag. Slow, small moves are finer (precision curve).
-- **Tuned out of the box.** The defaults come from recorded play sessions. Sensitivity is one slider; everything else is under *Advanced tuning* if you want it.
+- **Tuned out of the box.** The defaults come from recorded play sessions. **One sensitivity** (view degrees per head degree) feels the same on the controller and the mouse; everything else is under *Advanced tuning* if you want it.
 
 ![Tuning panel](screenshots/panel.png)
 
@@ -38,14 +38,15 @@ The installer works out what your system needs, lists it, and asks once:
 ## Use
 
 - **Bar icon:** left-click opens the panel, middle-click turns head aim on or off, right-click recenters.
-- **Panel:** on/off, Recenter, Invert up/down, and the sensitivity sliders (controller and mouse). *Advanced tuning* has precision, dead zone, smoothing, lag removal and the game's stick response, plus *Reset to defaults*. Changes apply within a second.
+- **Panel:** on/off, Recenter, Invert up/down, the output (*Auto* / *Controller* / *Mouse*), *Sensitivity* and *Vertical ratio*. *Advanced tuning* has precision, dead zone, smoothing, lag removal and how the game turns (stick turn speed and dead zone, mouse speed), plus *Reset to defaults*. Changes apply within a second.
 - **Command line:** `bin/xr-head-aim toggle|on|off|recenter|state|tune key=value…|tune reset`. For a key binding in Hyprland: `bind = ALT, E, exec, ~/.config/omarchy/plugins/io.github.r88800.xr-head-aim/bin/xr-head-aim toggle`.
 - **Games:** Steam games (`steam_app_*` windows) count automatically. Add other games with `xr-head-aim tune extra_classes=class1,class2`, and keep head aim out of a game with `excluded_classes=…` (find a class with `hyprctl activewindow`).
 
 ### Tuning tips
 
-- **Controller:** set the game's look acceleration to 0 and *Game stick dead zone* to the game's look dead zone, then adjust *Controller sensitivity*.
-- **Mouse:** set *Mouse sensitivity* so a head turn feels right with your in-game mouse sensitivity.
+- **Set *Sensitivity* once:** it's view degrees per head degree, so the same head turn moves the view the same amount on the controller and the mouse. For that to hold, tell it how the game turns (*Advanced tuning*):
+  - **Controller:** set the game's look acceleration to 0, *Game stick dead zone* to the game's look dead zone, and *Game turn speed* to how fast the game turns at full stick.
+  - **Mouse:** *Game mouse speed* is the view degrees per mouse count. In Source games (CS2, Half-Life, Portal) it's 0.022 × your in-game sensitivity; elsewhere, adjust it until a head turn and the view match.
 - **The view drifts while you hold still:** raise *Dead zone*. **Small moves feel twitchy:** lower *Slow-motion precision* or raise *Tremor smoothing*.
 
 ### Troubleshooting
@@ -68,7 +69,7 @@ This removes the services and udev rules, and makes the controller visible to ga
 
 Two small Python programs:
 
-- **`xr_head_aim.py`** (user service) reads XRLinuxDriver's UDP stream on `127.0.0.1:4242`: six doubles (x, y, z, yaw, pitch, roll) and a frame counter per pose. It turns the change in angle into a head speed, timed by the frame counter so network jitter adds no noise, shapes it (dead zone, tremor smoothing, precision curve, lag removal), and sends it to the controller bridge while a controller is connected, otherwise to a virtual mouse. Settings live in `~/.config/xr-head-aim/settings.json`.
+- **`xr_head_aim.py`** (user service) reads XRLinuxDriver's UDP stream on `127.0.0.1:4242`: six doubles (x, y, z, yaw, pitch, roll) and a frame counter per pose. It turns the change in angle into a head speed, timed by the frame counter so network jitter adds no noise, shapes it (dead zone, tremor smoothing, precision curve, lag removal), and scales it by the one sensitivity, and sends it to the controller bridge's right stick, a virtual mouse (converted with the game's mouse speed) or, in Controller mode without the bridge, a virtual pad. Settings live in `~/.config/xr-head-aim/settings.json`.
 - **`controller/xr_pad.py`** (system service, optional) grabs the DualSense's input devices and mirrors them onto a virtual "Microsoft X-Box 360 pad". It takes head aim from `/run/xr-pad/head.sock` and blends it as `physical + head × (1 − |physical|)`, forwards rumble, and keeps the virtual pad for 10 minutes after a disconnect so a running game keeps its controller.
 
 Run the tests with `python3 -m unittest test_xr_head_aim`. They need no glasses, controller, uinput or Hyprland.
