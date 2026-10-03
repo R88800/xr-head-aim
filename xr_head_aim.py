@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """XR head aim: aim in games by turning your head, using XR glasses' IMU.
 
-XRLinuxDriver (https://github.com/wheaney/XRLinuxDriver) streams the glasses' pose as
-opentrack UDP datagrams (6 doubles x, y, z, yaw, pitch, roll + a uint32 frame counter,
+XRLinuxDriver (https://github.com/wheaney/XRLinuxDriver) streams the glasses' pose as UDP
+datagrams (6 doubles x, y, z, yaw, pitch, roll + a uint32 frame counter,
 NWU frame: yaw+ turns left, pitch+ looks down). This daemon turns head rotation into
 either relative mouse motion (any mouse-aim game; exact, no stick model) or a virtual
 gamepad's right stick, only while a game window is focused (Hyprland).
@@ -38,7 +38,7 @@ YAW, PITCH = 3, 4
 STALE = .12   # s without poses before the output centers / stops
 
 DEFAULTS = {
-    'port': 4242,               # XRLinuxDriver opentrack_app_port
+    'port': 4242,               # XRLinuxDriver's pose-stream port (default 4242)
     'output': 'mouse',          # 'mouse' or 'gamepad'
     # Head speed shaping (head deg/s), shared by both outputs.
     'still_from': .05,          # below: no output (sensor noise), fading in up to still_to

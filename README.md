@@ -26,14 +26,7 @@ An [Omarchy](https://omarchy.org) bar widget with a small background service. It
 
 ## Install
 
-1. Install XRLinuxDriver and have it broadcast poses. Add these lines to `~/.config/xr_driver/config.ini`:
-
-   ```ini
-   external_mode=opentrack
-   output_mode=external_only
-   ```
-
-   `output_mode=external_only` stops the driver's own mouse movement, which would otherwise fight this plugin. The default port is 4242. If you set `opentrack_app_port`, the installer picks it up.
+1. Install [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) and plug in your glasses once so it creates `~/.config/xr_driver/config.ini`. No other tracking software is needed: the head tracking comes from the glasses' own IMU.
 
 2. Add the plugin and run its setup:
 
@@ -45,10 +38,11 @@ An [Omarchy](https://omarchy.org) bar widget with a small background service. It
    `install.sh` does the following:
    - checks the dependencies
    - adds a udev rule for `/dev/uinput` only if you don't already have access (this is the only step that asks for `sudo`)
+   - switches XRLinuxDriver to stream head poses over UDP and stops its own mouse movement, which would otherwise fight this plugin (two lines in `config.ini`; the old file is kept as `config.ini.before-xr-head-aim`)
    - writes `~/.config/xr-head-aim/settings.json`
    - installs a systemd **user** service
 
-   It doesn't change any other configuration. Run `install.sh --autostart` if you want head aim to start at login.
+   It doesn't change anything else. Run `install.sh --autostart` if you want head aim to start at login.
 
 ## Use
 

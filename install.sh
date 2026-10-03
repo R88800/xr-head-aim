@@ -36,21 +36,28 @@ RULE
   [ -w /dev/uinput ] && ok "/dev/uinput is writable" || warn "Still no access to /dev/uinput; log out and back in."
 fi
 
-# XRLinuxDriver must broadcast poses (its "opentrack" external mode).
+# XRLinuxDriver must stream poses over UDP (its external pose-stream mode) instead of
+# moving the mouse itself. Set the two keys, keep everything else in the file.
 driver=$config/xr_driver/config.ini
+stream_mode=opentrack   # XRLinuxDriver's fixed name for its UDP pose stream
 port=4242
+set_key() {   # set_key KEY VALUE: replace the line, or append it
+  if grep -q "^$1=" "$driver"; then sed -i "s|^$1=.*|$1=$2|" "$(readlink -f "$driver")"
+  else printf '%s=%s\n' "$1" "$2" >> "$driver"; fi
+}
 if [ -f "$driver" ]; then
-  p=$(sed -n 's/^opentrack_app_port=\([0-9]\+\).*/\1/p' "$driver" | tail -1)
+  p=$(sed -n 's/^[a-z]*_app_port=\([0-9]\+\).*/\1/p' "$driver" | tail -1)
   [ -n "$p" ] && port=$p
-  if grep -qE '^external_mode=.*opentrack' "$driver"; then
-    ok "XRLinuxDriver sends poses to 127.0.0.1:$port"
+  if grep -qE "^external_mode=.*$stream_mode" "$driver" && grep -q '^output_mode=external_only' "$driver"; then
+    ok "XRLinuxDriver streams poses to 127.0.0.1:$port"
   else
-    warn "XRLinuxDriver isn't sending poses yet. Add these lines to $driver:"
-    echo "        external_mode=opentrack"
-    echo "        output_mode=external_only    # stops the driver's own mouse movement"
+    cp "$driver" "$driver.before-xr-head-aim"
+    set_key external_mode "$stream_mode"
+    set_key output_mode external_only
+    ok "XRLinuxDriver set to stream poses to 127.0.0.1:$port (backup: $driver.before-xr-head-aim)"
   fi
 else
-  warn "XRLinuxDriver not found. Install it first: https://github.com/wheaney/XRLinuxDriver"
+  warn "XRLinuxDriver not found. Install it, then rerun this: https://github.com/wheaney/XRLinuxDriver"
 fi
 
 # Settings (kept on reinstall), with the driver's port.
