@@ -1,0 +1,92 @@
+# XR Head Aim
+
+Aim in games by turning your head with XR glasses. Head aim adds to your mouse or controller; it doesn't replace them.
+
+An [Omarchy](https://omarchy.org) bar widget with a small background service. It reads your glasses' head tracking through [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) and turns head movement into mouse movement or a gamepad right stick. It only does this while a game window has focus.
+
+![XR Head Aim on the Omarchy desktop](preview.png)
+
+## What it does
+
+- **Low lag.** The glasses' IMU is read directly at about 115 Hz, with no generic smoothing filter. On fast moves the head speed is estimated from the latest three samples, so the aim follows the current motion rather than motion from half a sample ago. Output is written as soon as a sample arrives.
+- **Accurate mouse mode.** Mouse movement is exactly head movement × sensitivity. Fractions of a count carry over, so nothing is lost or added. It works in almost any mouse-aim game.
+- **Gamepad stick mode.** This creates a virtual Xbox-style pad and drives its right stick. It is linear in turn rate and skips the game's stick dead zone, the way Steam Input's "gyro to joystick camera" does.
+- **Holds still when you do.** A small dead zone and tremor smoothing apply only to very slow, near-still motion, so real turns get no added lag. A precision curve makes slow, small head moves finer.
+- **Only in games.** By default it only acts while a Steam game window (`steam_app_*`) has focus, so it never moves your desktop pointer. You can add other window classes or exclude specific games.
+- **Live tuning from the bar.** Turn it on or off, pick the output mode, and adjust sensitivity, vertical ratio, precision, dead zone, smoothing and lag removal. Changes apply instantly.
+
+![Tuning panel](screenshots/panel.png)
+
+## Requirements
+
+- Omarchy (Hyprland + the Omarchy shell)
+- XR glasses supported by [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver#supported-devices) (VITURE, XREAL, Rokid, RayNeo). It has been tested on a **VITURE Luma Pro**; other glasses should work the same way but haven't been tested.
+- `python3` and `python-evdev` (`sudo pacman -S python-evdev`)
+- Write access to `/dev/uinput`. Steam's udev rule usually gives you this already; if not, `install.sh` offers to add one.
+
+## Install
+
+1. Install XRLinuxDriver and have it broadcast poses. Add these lines to `~/.config/xr_driver/config.ini`:
+
+   ```ini
+   external_mode=opentrack
+   output_mode=external_only
+   ```
+
+   `output_mode=external_only` stops the driver's own mouse movement, which would otherwise fight this plugin. The default port is 4242. If you set `opentrack_app_port`, the installer picks it up.
+
+2. Add the plugin and run its setup:
+
+   ```bash
+   omarchy plugin add https://github.com/R88800/xr-head-aim --enable
+   ~/.config/omarchy/plugins/io.github.r88800.xr-head-aim/install.sh
+   ```
+
+   `install.sh` does the following:
+   - checks the dependencies
+   - adds a udev rule for `/dev/uinput` only if you don't already have access (this is the only step that asks for `sudo`)
+   - writes `~/.config/xr-head-aim/settings.json`
+   - installs a systemd **user** service
+
+   It doesn't change any other configuration. Run `install.sh --autostart` if you want head aim to start at login.
+
+## Use
+
+- **Bar icon:** left-click opens the panel, middle-click turns it on or off, right-click recenters.
+- **Panel:** an on/off switch, plus Recenter, Pause and Reset tuning buttons, the output mode, and the sliders.
+- **Command line:** `bin/xr-head-aim start|stop|toggle|recenter|pause|state|tune key=value…|tune reset`
+
+### Tuning tips
+
+- **Mouse mode:** set *Sensitivity* (mouse counts per head degree) so that a head turn feels right with your in-game mouse sensitivity.
+- **Gamepad mode:** set the game's look acceleration to 0. Set *Game stick dead zone* to the game's look dead zone. `game_full_rate`, the game's turn speed at full stick, can be set in `settings.json`.
+- **If the view drifts while you hold still:** raise *Dead zone*.
+- **If small moves feel twitchy:** lower *Slow-motion precision* or raise *Tremor smoothing*.
+- **To let a game through the focus check:** if it isn't a Steam window, add its class to `extra_classes`. To keep head aim out of a game, add it to `excluded_classes`. Find a class with `hyprctl activewindow`.
+
+## Uninstall
+
+```bash
+~/.config/omarchy/plugins/io.github.r88800.xr-head-aim/uninstall.sh   # add --purge to also delete settings
+omarchy plugin remove io.github.r88800.xr-head-aim
+```
+
+This removes the service and the udev rule, if it was added.
+
+## How it works
+
+XRLinuxDriver sends one UDP datagram per head pose to `127.0.0.1:<port>`. Each datagram holds six doubles (x, y, z, yaw, pitch, roll) followed by a frame counter. `xr_head_aim.py` turns the change in angle into a head speed, using time steps from the frame counter so network jitter adds no noise. It then shapes that speed (dead zone, tremor smoothing, precision curve, lag removal) and writes it to a virtual uinput mouse or gamepad. The bar widget talks to the service through `bin/xr-head-aim`.
+
+Run the tests with `python3 -m unittest test_xr_head_aim`. They need no glasses, uinput or Hyprland.
+
+## Built with Claude
+
+This plugin was built by Riley together with [Claude Code](https://claude.com/claude-code), Anthropic's AI coding assistant. The aiming algorithm was tuned against recorded play sessions on a VITURE Luma Pro, and Claude wrote and tested the code with Riley's direction and in-game feedback. Please review it as you would any community code before installing.
+
+## Contributing
+
+Issues and pull requests are welcome from anyone. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE). XRLinuxDriver and the glasses' SDKs are separate projects with their own licenses and are not included here.

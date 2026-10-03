@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.r88800.xr-head-aim",
+  "name": "XR Head Aim",
+  "version": "1.0.0",
+  "author": "Riley",
+  "description": "Aim in games by turning your head with XR glasses (VITURE, XREAL, Rokid, RayNeo via XRLinuxDriver): low-lag mouse or gamepad aim, live tuning from the bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "XR Head Aim",
+    "description": "Head aim on/off, output mode and live tuning",
+    "category": "System",
+    "allowMultiple": false
+  }
+}

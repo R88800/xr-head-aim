@@ -1,0 +1,11 @@
+[Unit]
+Description=XR Head Aim: XR glasses head tracking as mouse or gamepad aim
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/python3 @DIR@/xr_head_aim.py run
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# xr-head-aim start|stop|toggle|recenter|pause|state|tune k=v...|tune reset
+set -uo pipefail
+here=$(cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd)
+unit=xr-head-aim.service
+active() { systemctl --user is-active --quiet "$unit"; }
+case "${1:-}" in
+  start) systemctl --user start "$unit" ;;
+  stop) systemctl --user stop "$unit" ;;
+  toggle) if active; then systemctl --user stop "$unit"; else systemctl --user start "$unit"; fi ;;
+  recenter) active && systemctl --user kill --kill-whom=main --signal=SIGUSR1 "$unit" ;;
+  pause) active && systemctl --user kill --kill-whom=main --signal=SIGUSR2 "$unit" ;;
+  state|tune) exec python3 "$here/xr_head_aim.py" "$@" ;;
+  *) echo "usage: xr-head-aim start|stop|toggle|recenter|pause|state|tune k=v...|tune reset" >&2; exit 2 ;;
+esac
