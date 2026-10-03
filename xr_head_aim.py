@@ -338,7 +338,16 @@ class Focus(threading.Thread):
             self.game, self.updated = is_game(window, self.s), time.monotonic()
 
 
+def bridge_installed():
+    return PAD_STATE.parent.is_dir()
+
+
 def make_output(kind):
+    if kind == 'gamepad' and bridge_installed():
+        # A second virtual pad next to the bridged controller makes games pick the
+        # wrong (empty) pad: with the bridge, head aim always goes to the real stick.
+        print('Controller bridge present: using its right stick instead of a virtual pad', flush=True)
+        return AutoOut()
     return {'gamepad': GamepadOut, 'mouse': MouseOut}.get(kind, AutoOut)()
 
 
@@ -433,6 +442,7 @@ def state():
     except (OSError, ValueError):
         data = {'running': False}
     data['settings'] = load_settings()
+    data['bridge'] = bridge_installed()
     unit = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'systemd' / 'user' / 'xr-head-aim.service'
     data['installed'] = unit.exists()
     print(json.dumps(data))

@@ -391,14 +391,15 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
             Repeater {
+              // With the controller bridge, head aim goes into the real controller's stick;
+              // a second virtual pad would only confuse games.
               model: [
-                { id: "auto", label: "Auto", icon: "󰁨" },
-                { id: "mouse", label: "Mouse", icon: "󰍽" },
-                { id: "gamepad", label: "Virtual pad", icon: "󰊴" }
-              ]
+                { id: "auto", label: root.status.bridge ? "Controller" : "Auto", icon: "󰁨" },
+                { id: "mouse", label: "Mouse", icon: "󰍽" }
+              ].concat(root.status.bridge ? [] : [{ id: "gamepad", label: "Virtual pad", icon: "󰊴" }])
               Button {
                 required property var modelData
-                width: (outputRow.width - 2 * outputRow.spacing) / 3
+                width: (outputRow.width - (root.status.bridge ? 1 : 2) * outputRow.spacing) / (root.status.bridge ? 2 : 3)
                 iconText: modelData.icon
                 text: modelData.label
                 fontSize: Style.font.bodySmall
