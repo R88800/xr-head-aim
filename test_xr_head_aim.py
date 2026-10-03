@@ -78,6 +78,15 @@ class MappingTests(unittest.TestCase):
         self.assertFalse(x.is_game({'class': 'firefox'}, s))
         self.assertFalse(x.is_game({}, s))
 
+    def test_class_and_title_rules(self):
+        s = dict(x.DEFAULTS, extra_classes=['brave-browser|Xbox Cloud Gaming'])
+        cloud = {'class': 'brave-browser', 'title': 'Call of Duty | Xbox Cloud Gaming on Xbox.com - Brave'}
+        self.assertTrue(x.is_game(cloud, s))
+        self.assertFalse(x.is_game({'class': 'brave-browser', 'title': 'YouTube - Brave'}, s))
+        self.assertFalse(x.is_game({'class': 'firefox', 'title': 'Xbox Cloud Gaming'}, s))
+        s['excluded_classes'] = ['brave-browser|Call of Duty']
+        self.assertFalse(x.is_game(cloud, s))
+
 
 class MouseTests(unittest.TestCase):
     def test_mouse_motion_equals_head_motion(self):

@@ -40,7 +40,7 @@ The installer works out what your system needs, lists it, and asks once:
 - **Bar icon:** left-click opens the panel, middle-click turns head aim on or off, right-click recenters.
 - **Panel:** on/off, Recenter, Reset sliders, Invert up/down, the output (*Auto* / *Controller* / *Mouse*), *Sensitivity* and *Vertical ratio*. *Advanced tuning* has precision, dead zone, smoothing, lag removal and how the game turns (stick turn speed and dead zone, mouse speed). Sliders change only when you click or drag them; scrolling over one scrolls the panel. *Reset sliders* puts them back to the tuned defaults and keeps your on/off and output choice. Changes apply within a second.
 - **Command line:** `bin/xr-head-aim toggle|on|off|recenter|state|tune key=value…|tune reset`. For a key binding in Hyprland: `bind = ALT, E, exec, ~/.config/omarchy/plugins/io.github.r88800.xr-head-aim/bin/xr-head-aim toggle`.
-- **Games:** Steam games (`steam_app_*` windows) count automatically. Add other games with `xr-head-aim tune extra_classes=class1,class2`, and keep head aim out of a game with `excluded_classes=…` (find a class with `hyprctl activewindow`).
+- **Games:** Steam games (`steam_app_*` windows) count automatically. Add other games with `xr-head-aim tune "extra_classes=class1,class2"`, and keep head aim out of a game with `excluded_classes=…` (find a class with `hyprctl activewindow -j`). A rule can also match part of the window title: `class|title fragment`. That's how a game in a browser works without enabling head aim in every tab, for example `xr-head-aim tune "extra_classes=brave-browser|Xbox Cloud Gaming"` for Xbox Cloud Gaming.
 
 ### Tuning tips
 

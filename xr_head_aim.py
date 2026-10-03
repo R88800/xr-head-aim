@@ -67,7 +67,7 @@ DEFAULTS = {
     'game_full_rate': 165.0,    # controller: view deg/s at full stick
     'game_deadzone': .06,       # controller: the game's look dead zone (skipped)
     'game_mouse_deg': .15,      # mouse: view degrees per mouse count (Source games: 0.022 x sensitivity)
-    # Window classes: extra games (non-Steam), and games to leave alone.
+    # Window rules, `class` or `class|title fragment`: extra games (non-Steam), and games to leave alone.
     'extra_classes': [],
     'excluded_classes': [],
 }
@@ -383,11 +383,18 @@ class Output:
 
 # -- only in games -----------------------------------------------------------------------
 
+def matches(entry, cls, title):
+    """A window rule is a class, or `class|title fragment` (e.g. a game in a browser tab)."""
+    want, _, fragment = entry.partition('|')
+    return want == cls and fragment.lower() in title.lower()
+
+
 def is_game(window, s):
     cls = str(window.get('class') or window.get('initialClass') or '')
-    if not cls or cls in s['excluded_classes']:
+    title = str(window.get('title') or '')
+    if not cls or any(matches(e, cls, title) for e in s['excluded_classes']):
         return False
-    return cls.startswith('steam_app_') or cls in s['extra_classes']
+    return cls.startswith('steam_app_') or any(matches(e, cls, title) for e in s['extra_classes'])
 
 
 class GameFocus(threading.Thread):
