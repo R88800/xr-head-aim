@@ -157,6 +157,15 @@ Panel {
     setValue(spec.key, value(spec.key) + dx * spec.step)
   }
 
+  // Scrolling over a slider scrolls the panel instead of changing the slider (a
+  // touchpad's two-finger scroll is a wheel event): values change only by click or drag.
+  function scrollPanel(wheel) {
+    var flick = scrollArea.contentItem
+    if (!flick || flick.contentY === undefined) return
+    var dy = wheel.pixelDelta.y !== 0 ? wheel.pixelDelta.y : wheel.angleDelta.y / 2
+    flick.contentY = Math.max(0, Math.min(Math.max(0, flick.contentHeight - flick.height), flick.contentY - dy))
+  }
+
   function ensureCursorVisible(item) {
     if (!item || !scrollArea) return
     var flick = scrollArea.contentItem
@@ -367,6 +376,12 @@ Panel {
             Button {
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
+              text: "Reset sliders"
+              onClicked: root.resetTuning()
+            }
+            Button {
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
               text: "Invert up/down"
               bordered: true
               active: root.value("invert_y") === 1
@@ -478,8 +493,11 @@ Panel {
                   onReleased: function(v) { root.setValue(sliderBlock.modelData.key, v) }
                 }
 
-                HoverHandler {
-                  onHoveredChanged: if (hovered) { root.cursorActive = true; root.cursor = sliderBlock.index }
+                // On top of the slider: takes only the wheel (clicks and drags pass through).
+                MouseArea {
+                  anchors.fill: slider
+                  acceptedButtons: Qt.NoButton
+                  onWheel: function(wheel) { root.scrollPanel(wheel); wheel.accepted = true }
                 }
               }
 
@@ -505,13 +523,6 @@ Panel {
               fontFamily: root.bar.fontFamily
               text: root.showAdvanced ? "Hide advanced" : "Advanced tuning"
               onClicked: root.showAdvanced = !root.showAdvanced
-            }
-            Button {
-              visible: root.showAdvanced
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              text: "Reset to defaults"
-              onClicked: root.resetTuning()
             }
           }
         }

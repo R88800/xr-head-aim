@@ -131,10 +131,11 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(x.load_settings(self.path)['output'], 'controller')
 
     def test_reset_keeps_on_off_and_game_lists(self):
-        x.tune(['gain=9', 'enabled=0', 'extra_classes=heroic'])
+        x.tune(['gain=9', 'still_from=1', 'enabled=0', 'output=mouse', 'extra_classes=heroic'])
         x.tune(['reset'])
         s = x.load_settings(self.path)
-        self.assertEqual((s['gain'], s['enabled'], s['extra_classes']), (x.DEFAULTS['gain'], 0, ['heroic']))
+        self.assertEqual((s['gain'], s['still_from'], s['enabled'], s['output'], s['extra_classes']),
+                         (x.DEFAULTS['gain'], x.DEFAULTS['still_from'], 0, 'mouse', ['heroic']))
 
     def test_toggle_on_off(self):
         x.switch('toggle')

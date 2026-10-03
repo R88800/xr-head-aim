@@ -18,7 +18,7 @@ so it survives restarts.
   xr_head_aim.py state           one JSON status line (bar widget)
   xr_head_aim.py toggle|on|off   head aim on/off
   xr_head_aim.py tune k=v ...    change settings; the daemon applies them within a second
-  xr_head_aim.py tune reset      back to the defaults (keeps on/off and game lists)
+  xr_head_aim.py tune reset      sliders back to the defaults (keeps on/off, output, game lists)
 
 SIGUSR1 recenters (restarts the filter from the current pose).
 """
@@ -73,7 +73,7 @@ DEFAULTS = {
 }
 LISTS = ('extra_classes', 'excluded_classes')
 OUTPUTS = ('auto', 'controller', 'mouse')
-KEPT_ON_RESET = ('enabled', *LISTS)
+KEPT_ON_RESET = ('enabled', 'output', *LISTS)   # reset is for the sliders
 
 
 # -- settings -------------------------------------------------------------------------
