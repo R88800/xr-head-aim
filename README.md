@@ -38,7 +38,7 @@ An [Omarchy](https://omarchy.org) bar widget with a small background service. It
    `install.sh` does the following:
    - checks the dependencies
    - adds a udev rule for `/dev/uinput` only if you don't already have access (this is the only step that asks for `sudo`)
-   - switches XRLinuxDriver to stream head poses over UDP and stops its own mouse movement, which would otherwise fight this plugin (two lines in `config.ini`; the old file is kept as `config.ini.before-xr-head-aim`)
+   - asks before switching XRLinuxDriver to stream head poses over UDP and stops its own mouse movement, which would otherwise fight this plugin (two lines in `config.ini`; the old file is kept as `config.ini.before-xr-head-aim`)
    - writes `~/.config/xr-head-aim/settings.json`
    - installs a systemd **user** service
 

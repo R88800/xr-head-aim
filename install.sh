@@ -51,10 +51,18 @@ if [ -f "$driver" ]; then
   if grep -qE "^external_mode=.*$stream_mode" "$driver" && grep -q '^output_mode=external_only' "$driver"; then
     ok "XRLinuxDriver streams poses to 127.0.0.1:$port"
   else
-    cp "$driver" "$driver.before-xr-head-aim"
-    set_key external_mode "$stream_mode"
-    set_key output_mode external_only
-    ok "XRLinuxDriver set to stream poses to 127.0.0.1:$port (backup: $driver.before-xr-head-aim)"
+    echo "  XRLinuxDriver must stream head poses and stop moving the mouse itself. This sets"
+    echo "  external_mode=$stream_mode and output_mode=external_only in $driver (backup kept)."
+    answer=n
+    [ -t 0 ] && read -r -p "  Change it now? [Y/n] " answer && answer=${answer:-y}
+    if [[ $answer =~ ^[Yy] ]]; then
+      cp "$driver" "$driver.before-xr-head-aim"
+      set_key external_mode "$stream_mode"
+      set_key output_mode external_only
+      ok "XRLinuxDriver set to stream poses to 127.0.0.1:$port (backup: $driver.before-xr-head-aim)"
+    else
+      warn "Not changed. Add those two lines to $driver yourself, then head aim will work."
+    fi
   fi
 else
   warn "XRLinuxDriver not found. Install it, then rerun this: https://github.com/wheaney/XRLinuxDriver"
