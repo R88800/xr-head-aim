@@ -1,6 +1,7 @@
 [Unit]
-Description=XR Head Aim: XR glasses head tracking as mouse or gamepad aim
+Description=XR Head Aim: aim in games by turning your head with XR glasses
 After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 ExecStart=/usr/bin/python3 @DIR@/xr_head_aim.py run

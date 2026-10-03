@@ -20,6 +20,8 @@ if [ -f /etc/systemd/system/xr-pad.service ]; then
   sudo udevadm trigger --action=change --subsystem-match=input --subsystem-match=hidraw
   echo "Controller bridge removed (the controller is visible to games directly again)."
 fi
+driver=$config/xr_driver/config.ini
+[ -f "$driver.before-xr-head-aim" ] && echo "Your previous XRLinuxDriver config is in $driver.before-xr-head-aim"
 if [ "${1:-}" = --purge ]; then
   rm -rf "$config/xr-head-aim"
   echo "Settings removed."

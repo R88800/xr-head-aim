@@ -5,12 +5,11 @@ import Quickshell.Io
 import qs.Ui
 import qs.Commons
 
-// XR Head Aim: XR glasses (via XRLinuxDriver) -> xr-head-aim.service -> controller
-// right stick (with the optional controller bridge), mouse or virtual gamepad, only
-// while a game is focused.
-// Left click opens the panel, middle click turns head aim on/off, right click
-// recenters. Sliders write ~/.config/xr-head-aim/settings.json through
-// `bin/xr-head-aim tune`, which the service reloads live.
+// XR Head Aim: XR glasses (via XRLinuxDriver) -> xr-head-aim.service -> the
+// controller's right stick while one is connected, otherwise the mouse; only while a
+// game is focused. Left click opens the panel, middle click turns head aim on/off,
+// right click recenters. Everything writes ~/.config/xr-head-aim/settings.json through
+// `bin/xr-head-aim`, which the service applies within a second.
 Panel {
   id: root
   moduleName: "io.github.r88800.xr-head-aim"
@@ -18,16 +17,16 @@ Panel {
 
   readonly property string tool: String(Qt.resolvedUrl("bin/xr-head-aim")).replace(/^file:\/\//, "")
 
-  property bool aimActive: false
   property bool installed: true
   property var status: ({})
-  property bool toggling: false
-  readonly property string outputMode: tuning.output === "gamepad" || tuning.output === "mouse" ? tuning.output : "auto"
+  property bool showAdvanced: false
+  readonly property bool aimOn: root.overrides.enabled !== undefined ? root.overrides.enabled === 1 : status.enabled !== false
+  readonly property bool aimActive: !!status.running && aimOn
   readonly property string statusText: !installed ? "Not set up: run install.sh in the plugin folder"
-    : !aimActive ? "Off"
-    : status.paused ? "Paused"
-    : !status.glasses ? "On · waiting for glasses (XRLinuxDriver)"
-    : status.game ? "On · aiming (" + (status.output === "controller" ? "controller stick" : status.output || outputMode) + ")"
+    : !status.running ? "Service not running: rerun install.sh"
+    : !aimOn ? "Off"
+    : !status.glasses ? "On · waiting for glasses"
+    : status.game ? "On · aiming with the " + (status.output === "controller" ? "controller stick" : "mouse")
     : "On · idle until a game is focused"
   property var tuning: ({})
 
@@ -40,33 +39,39 @@ Panel {
   property int cursor: -1
   property bool cursorActive: false
 
+  // The essentials first; everything else is under Advanced. Defaults are tuned on
+  // recorded play, so most people never open it.
   readonly property var allSliders: [
-    { key: "mouse_sensitivity", only: "mouse", section: "SENSITIVITY", label: "Mouse sensitivity",
-      hint: "Mouse counts per head degree (match it to your in-game mouse sensitivity)", min: 2, max: 200, step: 1, unit: "", digits: 0 },
-    { key: "gain", only: "gamepad", section: "SENSITIVITY", label: "Stick sensitivity",
+    { key: "gain", needsBridge: true, label: "Controller sensitivity",
       hint: "View degrees per head degree", min: 1, max: 10, step: 0.05, unit: "×", digits: 2 },
-    { key: "vertical_ratio", section: "SENSITIVITY", label: "Vertical ratio",
+    { key: "mouse_sensitivity", label: "Mouse sensitivity",
+      hint: "Mouse counts per head degree (match your in-game mouse sensitivity)", min: 2, max: 200, step: 1, unit: "", digits: 0 },
+    { key: "vertical_ratio", label: "Vertical ratio",
       hint: "Up/down speed relative to left/right", min: 0.3, max: 1.5, step: 0.05, unit: "×", digits: 2 },
-    { key: "precision", section: "SENSITIVITY", label: "Slow-motion precision",
+    { key: "precision", advanced: true, section: "PRECISION", label: "Slow-motion precision",
       hint: "Share of sensitivity for small, slow head moves", min: 0.2, max: 1, step: 0.05, unit: "%", digits: 0, percent: true },
-    { key: "precision_to", section: "SENSITIVITY", label: "Full sensitivity from",
+    { key: "precision_to", advanced: true, section: "PRECISION", label: "Full sensitivity from",
       hint: "Head speed where precision ends", min: 1, max: 30, step: 0.5, unit: "°/s", digits: 1 },
-    { key: "still_from", section: "DEAD ZONE", label: "Dead zone",
+    { key: "still_from", advanced: true, section: "DEAD ZONE", label: "Dead zone",
       hint: "Head speed below which the view stays still", min: 0, max: 2, step: 0.05, unit: "°/s", digits: 2 },
-    { key: "still_to", section: "DEAD ZONE", label: "Fade-in end",
+    { key: "still_to", advanced: true, section: "DEAD ZONE", label: "Fade-in end",
       hint: "Head speed where output reaches full strength", min: 0.1, max: 4, step: 0.05, unit: "°/s", digits: 2 },
-    { key: "smooth_ms", section: "SMOOTHING", label: "Tremor smoothing",
+    { key: "smooth_ms", advanced: true, section: "SMOOTHING", label: "Tremor smoothing",
       hint: "Averaging for slow movements (adds lag there)", min: 0, max: 80, step: 1, unit: " ms", digits: 0 },
-    { key: "smooth_from", section: "SMOOTHING", label: "Smoothing fades from",
+    { key: "smooth_from", advanced: true, section: "SMOOTHING", label: "Smoothing fades from",
       hint: "Head speed where smoothing starts to drop", min: 0, max: 5, step: 0.1, unit: "°/s", digits: 1 },
-    { key: "smooth_to", section: "SMOOTHING", label: "No smoothing above",
+    { key: "smooth_to", advanced: true, section: "SMOOTHING", label: "No smoothing above",
       hint: "Head speed with zero smoothing (zero lag)", min: 0.1, max: 10, step: 0.1, unit: "°/s", digits: 1 },
-    { key: "predict", section: "SMOOTHING", label: "Lag removal",
+    { key: "predict", advanced: true, section: "SMOOTHING", label: "Lag removal",
       hint: "Fast moves use the newest head rate (~4 ms less lag)", min: 0, max: 1, step: 0.05, unit: "%", digits: 0, percent: true },
-    { key: "game_deadzone", only: "gamepad", section: "GAME", label: "Game stick dead zone",
-      hint: "Must equal the game's look dead zone", min: 0, max: 0.3, step: 0.01, unit: "%", digits: 0, percent: true }
+    { key: "game_full_rate", advanced: true, needsBridge: true, section: "GAME (CONTROLLER)", label: "Game turn speed",
+      hint: "How fast the game turns at full stick", min: 60, max: 600, step: 5, unit: "°/s", digits: 0 },
+    { key: "game_deadzone", advanced: true, needsBridge: true, section: "GAME (CONTROLLER)", label: "Game stick dead zone",
+      hint: "Set it to the game's look dead zone", min: 0, max: 0.3, step: 0.01, unit: "%", digits: 0, percent: true }
   ]
-  readonly property var sliders: allSliders.filter(function(spec) { return !spec.only || root.outputMode === "auto" || spec.only === root.outputMode })
+  readonly property var sliders: allSliders.filter(function(spec) {
+    return (!spec.needsBridge || root.status.bridge) && (!spec.advanced || root.showAdvanced)
+  })
 
   // Pairs that must stay ordered (lower key, upper key).
   readonly property var orderedPairs: [
@@ -86,6 +91,7 @@ Panel {
   }
 
   function snap(key, v) {
+    if (key === "invert_y") return v
     for (var i = 0; i < sliders.length; i++) {
       var spec = sliders[i]
       if (spec.key !== key) continue
@@ -128,9 +134,12 @@ Panel {
   }
 
   function toggleAim() {
-    if (toggling) return
-    toggling = true
+    var o = Object.assign({}, overrides); o.enabled = aimOn ? 0 : 1; overrides = o
     toggleProc.running = true
+  }
+
+  function toggleInvert() {
+    setValue("invert_y", value("invert_y") ? 0 : 1)
   }
 
   function refreshState() {
@@ -156,16 +165,8 @@ Panel {
 
   onOpenedChanged: if (opened) refreshState()
 
-  function setOutput(mode) {
-    var o = Object.assign({}, overrides); o.output = mode; overrides = o
-    if (tuneProc.running) return
-    tuneProc.command = [root.tool, "tune", "output=" + mode]
-    tuneProc.running = true
-  }
-
   function applyState(s) {
     root.installed = s.installed !== false
-    root.aimActive = !!s.running
     root.status = s
     if (!s.settings) return
     root.tuning = s.settings
@@ -197,17 +198,12 @@ Panel {
   Process {
     id: toggleProc
     command: [root.tool, "toggle"]
-    onExited: { root.toggling = false; root.refreshState() }
+    onExited: root.refreshState()
   }
 
   Process {
     id: recenterProc
     command: [root.tool, "recenter"]
-  }
-
-  Process {
-    id: pauseProc
-    command: [root.tool, "pause"]
   }
 
   Process {
@@ -329,7 +325,7 @@ Panel {
                 width: parent.width
                 elide: Text.ElideRight
                 textFormat: Text.PlainText
-                text: root.toggling ? (root.aimActive ? "Stopping…" : "Starting…") : root.statusText
+                text: root.statusText
                 color: Qt.darker(root.bar.foreground, 1.4)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
@@ -341,8 +337,7 @@ Panel {
               anchors.right: parent.right
               anchors.rightMargin: Style.space(8)
               anchors.verticalCenter: parent.verticalCenter
-              checked: root.toggling ? !root.aimActive : root.aimActive
-              busy: root.toggling
+              checked: root.aimOn
               foreground: root.bar.foreground
               onToggled: root.toggleAim()
             }
@@ -367,48 +362,10 @@ Panel {
             Button {
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
-              text: "Pause"
-              enabled: root.aimActive
-              onClicked: pauseProc.running = true
-            }
-            Button {
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              text: "Reset tuning"
-              onClicked: root.resetTuning()
-            }
-          }
-
-          // ---------- Output ----------
-          PanelSeparator { foreground: root.bar.foreground }
-          PanelSectionHeader {
-            text: "OUTPUT"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-          }
-          Row {
-            id: outputRow
-            width: parent.width
-            spacing: Style.space(6)
-            Repeater {
-              // With the controller bridge, head aim goes into the real controller's stick;
-              // a second virtual pad would only confuse games.
-              model: [
-                { id: "auto", label: root.status.bridge ? "Controller" : "Auto", icon: "󰁨" },
-                { id: "mouse", label: "Mouse", icon: "󰍽" }
-              ].concat(root.status.bridge ? [] : [{ id: "gamepad", label: "Virtual pad", icon: "󰊴" }])
-              Button {
-                required property var modelData
-                width: (outputRow.width - (root.status.bridge ? 1 : 2) * outputRow.spacing) / (root.status.bridge ? 2 : 3)
-                iconText: modelData.icon
-                text: modelData.label
-                fontSize: Style.font.bodySmall
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                bordered: true
-                active: (root.overrides.output || root.outputMode) === modelData.id
-                onClicked: root.setOutput(modelData.id)
-              }
+              text: "Invert up/down"
+              bordered: true
+              active: root.value("invert_y") === 1
+              onClicked: root.toggleInvert()
             }
           }
 
@@ -420,8 +377,8 @@ Panel {
               id: sliderBlock
               required property var modelData
               required property int index
-              readonly property bool firstInSection: index === 0
-                || root.sliders[index - 1].section !== modelData.section
+              readonly property bool firstInSection: !!modelData.section
+                && (index === 0 || root.sliders[index - 1].section !== modelData.section)
               width: panelColumn.width
               spacing: Style.space(4)
 
@@ -504,6 +461,26 @@ Panel {
                 font.pixelSize: Style.font.caption
                 leftPadding: Style.space(6)
               }
+            }
+          }
+
+          // ---------- Advanced ----------
+          PanelSeparator { foreground: root.bar.foreground }
+          Row {
+            spacing: Style.space(8)
+            anchors.horizontalCenter: parent.horizontalCenter
+            Button {
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              text: root.showAdvanced ? "Hide advanced" : "Advanced tuning"
+              onClicked: root.showAdvanced = !root.showAdvanced
+            }
+            Button {
+              visible: root.showAdvanced
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              text: "Reset to defaults"
+              onClicked: root.resetTuning()
             }
           }
         }

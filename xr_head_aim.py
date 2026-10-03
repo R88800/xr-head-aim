@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""XR head aim: aim in games by turning your head, using XR glasses' IMU.
+"""XR Head Aim: aim in games by turning your head with XR glasses.
 
-XRLinuxDriver (https://github.com/wheaney/XRLinuxDriver) streams the glasses' pose as UDP
-datagrams (6 doubles x, y, z, yaw, pitch, roll + a uint32 frame counter,
-NWU frame: yaw+ turns left, pitch+ looks down). This daemon turns head rotation into
-relative mouse motion (any mouse-aim game; exact, no stick model) or a gamepad's right
-stick, only while a game window is focused (Hyprland). With the optional controller
-bridge (controller/xr_pad.py) the head aim goes into your real controller's right stick
-while it is connected, and to the mouse otherwise ('auto', the default).
+XRLinuxDriver streams the glasses' pose to 127.0.0.1:4242 (six doubles x, y, z, yaw,
+pitch, roll and a uint32 frame counter; yaw+ turns left, pitch+ looks down). This daemon
+turns head rotation into aim while a game window has focus:
 
-  xr_head_aim.py run            the daemon (xr-head-aim.service)
-  xr_head_aim.py state          one JSON status line (used by the bar widget)
-  xr_head_aim.py tune k=v ...   change settings (atomic; the daemon reloads live)
-  xr_head_aim.py tune reset     restore defaults
+- into your controller's right stick, through the controller bridge
+  (controller/xr_pad.py), while a controller is connected
+- into the mouse otherwise
 
-Signals: SIGUSR1 resets the filter, SIGUSR2 pauses/resumes.
+It runs for the whole session and idles until the glasses stream. On/off is a setting,
+so it survives restarts.
+
+  xr_head_aim.py run             the daemon (xr-head-aim.service)
+  xr_head_aim.py state           one JSON status line (bar widget)
+  xr_head_aim.py toggle|on|off   head aim on/off
+  xr_head_aim.py tune k=v ...    change settings; the daemon applies them within a second
+  xr_head_aim.py tune reset      back to the defaults (keeps on/off and game lists)
+
+SIGUSR1 recenters (restarts the filter from the current pose).
 """
 import json
 import math
@@ -33,18 +37,22 @@ from pathlib import Path
 CONFIG_DIR = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'xr-head-aim'
 SETTINGS_PATH = CONFIG_DIR / 'settings.json'
 STATE_PATH = Path(os.environ.get('XDG_RUNTIME_DIR', '/tmp')) / 'xr-head-aim.json'
-PAD_SOCKET = Path('/run/xr-pad/head.sock')   # controller bridge (optional, xr-pad.service)
-PAD_STATE = Path('/run/xr-pad/state')
+BRIDGE = Path('/run/xr-pad')   # controller bridge (xr-pad.service), if installed
 
+PORT = 4242                    # XRLinuxDriver's pose-stream port
 POSE = struct.Struct('=6d')
 FRAME = struct.Struct('=I')
 YAW, PITCH = 3, 4
-STALE = .12   # s without poses before the output centers / stops
+STALE = .12                    # s without poses before aim stops
 
+# Tuned on recorded play with a VITURE Luma Pro. Only the first block is a matter of taste.
 DEFAULTS = {
-    'port': 4242,               # XRLinuxDriver's pose-stream port (default 4242)
-    'output': 'auto',           # 'auto' (controller bridge if connected, else mouse), 'mouse' or 'gamepad'
-    # Head speed shaping (head deg/s), shared by both outputs.
+    'enabled': 1,
+    'gain': 5.9,                # controller: view degrees per head degree
+    'mouse_sensitivity': 40.0,  # mouse: counts per head degree (match your in-game sensitivity)
+    'vertical_ratio': .9,       # up/down relative to left/right
+    'invert_y': 0,
+    # Advanced: how head speed (deg/s) is shaped.
     'still_from': .05,          # below: no output (sensor noise), fading in up to still_to
     'still_to': 1.0,
     'smooth_ms': 20.0,          # tremor averaging below smooth_from; none above smooth_to
@@ -53,26 +61,21 @@ DEFAULTS = {
     'precision': .6,            # slow moves get this share of the sensitivity...
     'precision_to': 8.0,        # ...rising to full by this head speed
     'predict': 1.0,             # fast moves: 3-pose rate estimate (~4 ms less lag)
-    'vertical_ratio': .9,       # up/down relative to left/right
-    'invert_y': 0,
-    # Mouse output: counts per head degree (depends on the game's mouse sensitivity).
-    'mouse_sensitivity': 40.0,
-    # Gamepad output: camera degrees per head degree, and the game's stick response.
-    'gain': 5.0,
-    'game_full_rate': 165.0,    # camera deg/s at full stick (horizontal)
-    'game_full_rate_y': 135.0,
-    'game_deadzone': .06,       # the game's radial dead zone (skipped by the output)
-    # Focus gate: 'steam' = Steam game windows (class steam_app_*) and extra_classes;
-    # 'always' = whatever window is focused (careful: moves your desktop pointer).
-    'focus': 'steam',
-    'extra_classes': [],        # window classes that count as games
-    'excluded_classes': [],     # e.g. "steam_app_1145360" for a game without aiming
+    # Advanced: the game's stick response.
+    'game_full_rate': 165.0,    # view deg/s at full stick
+    'game_deadzone': .06,       # the game's look dead zone (skipped)
+    # Window classes: extra games (non-Steam), and games to leave alone.
+    'extra_classes': [],
+    'excluded_classes': [],
 }
-NUMERIC = {k for k, v in DEFAULTS.items() if isinstance(v, (int, float))}
-CHOICES = {'output': ('auto', 'mouse', 'gamepad'), 'focus': ('steam', 'always')}
+LISTS = ('extra_classes', 'excluded_classes')
+KEPT_ON_RESET = ('enabled', *LISTS)
 
 
-def load_settings(path=SETTINGS_PATH):
+# -- settings -------------------------------------------------------------------------
+
+def load_settings(path=None):
+    path = path or SETTINGS_PATH
     settings = dict(DEFAULTS)
     try:
         saved = json.loads(path.read_text())
@@ -82,23 +85,54 @@ def load_settings(path=SETTINGS_PATH):
         print(f'Ignoring unreadable {path}: {exc}', flush=True)
         return settings
     for key, value in saved.items():
-        if key in NUMERIC and isinstance(value, (int, float)) and not isinstance(value, bool):
-            settings[key] = float(value) if isinstance(DEFAULTS[key], float) else int(value)
-        elif key in CHOICES and value in CHOICES[key]:
-            settings[key] = value
-        elif key in ('extra_classes', 'excluded_classes') and isinstance(value, list):
+        if key in LISTS and isinstance(value, list):
             settings[key] = [str(v) for v in value]
+        elif key in DEFAULTS and key not in LISTS and isinstance(value, (int, float)) \
+                and not isinstance(value, bool):
+            settings[key] = type(DEFAULTS[key])(value)
     return settings
 
 
-def atomic_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.')
+def save_settings(settings, path=None):
+    """Atomic: the daemon must never read a half-written file."""
+    path = path or SETTINGS_PATH
+    real = Path(os.path.realpath(path))
+    real.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=real.parent, prefix=real.name + '.')
     with os.fdopen(fd, 'w') as f:
-        json.dump(data, f, indent=2)
+        json.dump(settings, f, indent=2)
         f.write('\n')
-    os.replace(tmp, path)
+    os.replace(tmp, real)
 
+
+def tune(args):
+    settings = load_settings()
+    if args == ['reset']:
+        settings = {**DEFAULTS, **{k: settings[k] for k in KEPT_ON_RESET}}
+    for arg in [] if args == ['reset'] else args:
+        key, sep, value = arg.partition('=')
+        if not sep or key not in DEFAULTS:
+            print(f'Unknown setting: {arg}', file=sys.stderr)
+            return 2
+        if key in LISTS:
+            settings[key] = [v for v in value.split(',') if v]
+            continue
+        try:
+            settings[key] = type(DEFAULTS[key])(float(value))
+        except ValueError:
+            print(f'{key} needs a number', file=sys.stderr)
+            return 2
+    save_settings(settings)
+    return 0
+
+
+def switch(command):
+    settings = load_settings()
+    on = {'on': 1, 'off': 0}.get(command, 0 if settings['enabled'] else 1)
+    return tune([f'enabled={on}'])
+
+
+# -- head motion ------------------------------------------------------------------------
 
 def smoothstep(x):
     x = min(1., max(0., x))
@@ -161,7 +195,7 @@ class HeadRate:
         return self.rate
 
 
-def glasses_point(pose, prev_yaw):
+def head_angles(pose, prev_yaw):
     """Driver pose -> ([deg right, deg down], unwrapped yaw for the next call)."""
     yaw = pose[YAW]
     if prev_yaw is not None:   # yaw wraps at +-180; keep it continuous
@@ -170,9 +204,9 @@ def glasses_point(pose, prev_yaw):
 
 
 def stick_for_rate(rate, full_rate, deadzone):
-    """Camera rate (deg/s per axis) -> stick: linear in rate, full stick at the game's
-    full turn rate, the game's dead zone skipped (anti-dead zone)."""
-    u = [rate[0] / full_rate[0], rate[1] / full_rate[1]]
+    """View rate (deg/s) -> stick: linear in rate, full stick at the game's full turn
+    rate, the game's dead zone skipped (like Steam Input's gyro-to-joystick camera)."""
+    u = [rate[0] / full_rate, rate[1] / full_rate]
     length = math.hypot(*u)
     if length < 1e-9:
         return [0., 0.]
@@ -180,7 +214,9 @@ def stick_for_rate(rate, full_rate, deadzone):
     return [u[0] / length * amount, u[1] / length * amount]
 
 
-class MouseOut:
+# -- where aim goes ----------------------------------------------------------------------
+
+class Mouse:
     """Relative mouse; sub-count remainders carry over, so total motion is exact."""
     def __init__(self):
         from evdev import UInput, ecodes as e
@@ -189,134 +225,103 @@ class MouseOut:
                          name='XR Head Aim Mouse')
         self.remainder = [0., 0.]
 
-    def send(self, rate, dt, s):
-        e = self.e
+    def aim(self, rate, dt, s):
         moved = False
-        for i, code in enumerate((e.REL_X, e.REL_Y)):
+        for i, code in enumerate((self.e.REL_X, self.e.REL_Y)):
             self.remainder[i] += rate[i] * s['mouse_sensitivity'] * dt
             whole = int(self.remainder[i])
             if whole:
                 self.remainder[i] -= whole
-                self.ui.write(e.EV_REL, code, whole)
+                self.ui.write(self.e.EV_REL, code, whole)
                 moved = True
         if moved:
             self.ui.syn()
 
-    def center(self):
+    def stop(self):
         self.remainder = [0., 0.]
 
     def close(self):
         self.ui.close()
 
 
-class GamepadOut:
-    """Virtual Xbox 360-style pad whose right stick carries the head aim."""
-    def __init__(self):
-        from evdev import UInput, AbsInfo, ecodes as e
-        self.e = e
-        axes = [(c, AbsInfo(0, -32768, 32767, 16, 128, 0)) for c in (e.ABS_X, e.ABS_Y, e.ABS_RX, e.ABS_RY)]
-        self.ui = UInput({e.EV_KEY: [e.BTN_SOUTH, e.BTN_EAST, e.BTN_NORTH, e.BTN_WEST, e.BTN_START, e.BTN_SELECT],
-                          e.EV_ABS: axes}, name='XR Head Aim Pad', vendor=0x045e, product=0x028e, version=0x110)
-        self.last = None
-
-    def send(self, rate, dt, s):
-        camera = [rate[0] * s['gain'], rate[1] * s['gain']]
-        stick = stick_for_rate(camera, (s['game_full_rate'], s['game_full_rate_y']), s['game_deadzone'])
-        self.write(stick)
-
-    def write(self, stick):
-        value = tuple(round(max(-1., min(1., v)) * 32767) for v in stick)
-        if value == self.last:
-            return
-        self.last = value
-        self.ui.write(self.e.EV_ABS, self.e.ABS_RX, value[0])
-        self.ui.write(self.e.EV_ABS, self.e.ABS_RY, value[1])
-        self.ui.syn()
-
-    def center(self):
-        self.write([0., 0.])
-
-    def close(self):
-        self.center()
-        self.ui.close()
-
-
-class ControllerOut:
-    """Right-stick head aim for the controller bridge (xr-pad.service), which blends it
-    with the physical stick. Sent on every pose: the bridge drops head aim after 0.25 s."""
+class ControllerStick:
+    """The controller bridge's right stick. Sent on every pose: the bridge drops head
+    aim 0.25 s after the last packet, so a crash can't leave the stick deflected."""
     def __init__(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
 
-    def send(self, rate, dt, s):
-        camera = [rate[0] * s['gain'], rate[1] * s['gain']]
-        self.write(stick_for_rate(camera, (s['game_full_rate'], s['game_full_rate_y']), s['game_deadzone']))
+    def aim(self, rate, dt, s):
+        view = [rate[0] * s['gain'], rate[1] * s['gain']]
+        self.send(stick_for_rate(view, s['game_full_rate'], s['game_deadzone']))
 
-    def write(self, stick):
+    def send(self, stick):
         try:
-            self.sock.sendto(f'{stick[0]:.5f} {stick[1]:.5f}'.encode(), str(PAD_SOCKET))
+            self.sock.sendto(f'{stick[0]:.5f} {stick[1]:.5f}'.encode(), str(BRIDGE / 'head.sock'))
         except OSError:
             pass   # bridge restarting: the next pose tries again
 
-    def center(self):
-        self.write([0., 0.])
+    def stop(self):
+        self.send([0., 0.])
 
     def close(self):
-        self.center()
+        self.stop()
         self.sock.close()
 
 
-def controller_connected(path=None):
+def controller_connected():
     try:
-        return bool(json.loads((path or PAD_STATE).read_text()).get('connected'))
+        return bool(json.loads((BRIDGE / 'state').read_text()).get('connected'))
     except (OSError, ValueError):
         return False
 
 
-class AutoOut:
-    """Controller right stick while the bridge reports a connected controller, else mouse."""
+class Output:
+    """The controller's right stick while one is connected, the mouse otherwise."""
     def __init__(self):
-        self.mouse = MouseOut()
-        self.controller = ControllerOut()
+        self.mouse = Mouse()
+        self.stick = ControllerStick()
+        self.target = self.mouse
         self.checked = 0.
-        self.active = self.mouse
 
     @property
-    def kind(self):
-        return 'controller' if self.active is self.controller else 'mouse'
+    def name(self):
+        return 'controller' if self.target is self.stick else 'mouse'
 
-    def pick(self):
+    def follow_controller(self):
         now = time.monotonic()
-        if now - self.checked >= .5:
-            self.checked = now
-            want = self.controller if controller_connected() else self.mouse
-            if want is not self.active:
-                self.active.center()
-                self.active = want
-        return self.active
+        if now - self.checked < .5:
+            return
+        self.checked = now
+        target = self.stick if controller_connected() else self.mouse
+        if target is not self.target:
+            self.target.stop()
+            self.target = target
 
-    def send(self, rate, dt, s):
-        self.pick().send(rate, dt, s)
+    def aim(self, rate, dt, s):
+        self.follow_controller()
+        self.target.aim(rate, dt, s)
 
-    def center(self):
-        self.pick().center()
+    def stop(self):
+        self.follow_controller()
+        self.target.stop()
 
     def close(self):
-        self.controller.close()
+        self.stick.close()
         self.mouse.close()
 
+
+# -- only in games -----------------------------------------------------------------------
 
 def is_game(window, s):
     cls = str(window.get('class') or window.get('initialClass') or '')
     if not cls or cls in s['excluded_classes']:
         return False
-    if s['focus'] == 'always':
-        return True
     return cls.startswith('steam_app_') or cls in s['extra_classes']
 
 
-class Focus(threading.Thread):
-    """Polls Hyprland's focused window; output is allowed only while a game has focus."""
+class GameFocus(threading.Thread):
+    """Polls Hyprland's focused window; fails closed if the answer is stale."""
     def __init__(self, settings):
         super().__init__(daemon=True)
         self.s = settings
@@ -338,45 +343,50 @@ class Focus(threading.Thread):
             self.game, self.updated = is_game(window, self.s), time.monotonic()
 
 
-def bridge_installed():
-    return PAD_STATE.parent.is_dir()
+# -- the daemon --------------------------------------------------------------------------
 
-
-def make_output(kind):
-    if kind == 'gamepad' and bridge_installed():
-        # A second virtual pad next to the bridged controller makes games pick the
-        # wrong (empty) pad: with the bridge, head aim always goes to the real stick.
-        print('Controller bridge present: using its right stick instead of a virtual pad', flush=True)
-        return AutoOut()
-    return {'gamepad': GamepadOut, 'mouse': MouseOut}.get(kind, AutoOut)()
+def newest_pose(sock):
+    """Drain the socket (~115 Hz; only the newest pose matters) -> (pose, frame) or None."""
+    newest = None
+    while True:
+        try:
+            data = sock.recv(128)
+        except BlockingIOError:
+            return newest
+        if len(data) >= POSE.size:
+            pose = POSE.unpack_from(data)
+            frame = FRAME.unpack_from(data, POSE.size)[0] if len(data) >= POSE.size + FRAME.size else None
+            if all(map(math.isfinite, pose)):
+                newest = pose, frame
 
 
 def run():
     settings = load_settings()
     mtime = SETTINGS_PATH.stat().st_mtime if SETTINGS_PATH.exists() else 0.
-    flags = {'stop': False, 'reset': False, 'paused': False}
+    flags = {'stop': False, 'recenter': False}
     signal.signal(signal.SIGTERM, lambda *_: flags.update(stop=True))
     signal.signal(signal.SIGINT, lambda *_: flags.update(stop=True))
-    signal.signal(signal.SIGUSR1, lambda *_: flags.update(reset=True))
-    signal.signal(signal.SIGUSR2, lambda *_: flags.update(paused=not flags['paused'], reset=True))
+    signal.signal(signal.SIGUSR1, lambda *_: flags.update(recenter=True))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('127.0.0.1', int(settings['port'])))
+    sock.bind(('127.0.0.1', PORT))
     sock.setblocking(False)
-    output, kind = make_output(settings['output']), settings['output']
-    focus = Focus(settings)
+    output = Output()
+    focus = GameFocus(settings)
     focus.start()
     head = HeadRate(settings)
-    yaw = None
-    last_pose = 0.
+    yaw, last_pose = None, 0.
     next_check = next_state = 0.
-    print(f"Listening for XRLinuxDriver poses on 127.0.0.1:{settings['port']} ({kind} output)", flush=True)
+    print(f'Listening for XRLinuxDriver poses on 127.0.0.1:{PORT}', flush=True)
 
     def publish(now):
-        atomic_json(STATE_PATH, {'running': True, 'paused': flags['paused'],
-                                 'output': getattr(output, 'kind', kind),
-                                 'glasses': now - last_pose < 1., 'game': focus.allowed(),
-                                 'window': focus.window, 'pid': os.getpid()})
+        tmp = STATE_PATH.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'running': True, 'enabled': bool(settings['enabled']),
+                                   'output': output.name, 'glasses': now - last_pose < 1.,
+                                   'game': focus.allowed(), 'window': focus.window,
+                                   'pid': os.getpid()}))
+        tmp.replace(STATE_PATH)
+
     try:
         while not flags['stop']:
             ready, _, _ = select.select([sock], [], [], .1)
@@ -388,101 +398,62 @@ def run():
                     mtime = m
                     settings.clear()
                     settings.update(load_settings())
-                    if settings['output'] != kind:
-                        output.close()
-                        output, kind = make_output(settings['output']), settings['output']
-                    print('Settings reloaded', flush=True)
+                    print('Settings applied', flush=True)
             if now >= next_state:
                 next_state = now + .5
                 publish(now)
-            if flags['reset']:
-                flags['reset'] = False
-                print('Paused' if flags['paused'] else 'Resumed', flush=True)
+            if flags['recenter']:
+                flags['recenter'] = False
                 head.reset()
-                output.center()
-            if not ready:
+                output.stop()
+            received = newest_pose(sock) if ready else None
+            if received is None:
                 if now - last_pose > STALE:
-                    output.center()
+                    output.stop()
                 continue
-            newest = frame = None
-            while True:   # only the newest pose matters
-                try:
-                    data = sock.recv(128)
-                except BlockingIOError:
-                    break
-                if len(data) >= POSE.size:
-                    newest = POSE.unpack_from(data)
-                    frame = FRAME.unpack_from(data, POSE.size)[0] if len(data) >= POSE.size + FRAME.size else None
-            if newest is None or not all(map(math.isfinite, newest)):
-                continue
-            point, yaw = glasses_point(newest, yaw if now - last_pose < 1. else None)
+            pose, frame = received
+            angles, yaw = head_angles(pose, yaw if now - last_pose < 1. else None)
             last_pose = now
-            if flags['paused'] or not focus.allowed():
+            if not settings['enabled'] or not focus.allowed():
                 head.reset()
-                output.center()
+                output.stop()
                 continue
-            rate = head.step(point, frame, now)
-            output.send(rate, head.dt, settings)   # head.dt: mouse motion = head motion, exactly
+            rate = head.step(angles, frame, now)
+            output.aim(rate, head.dt, settings)   # head.dt: mouse motion = head motion, exactly
     finally:
         focus.stopped.set()
         output.close()
         sock.close()
-        try:
-            STATE_PATH.unlink()
-        except OSError:
-            pass
+        STATE_PATH.unlink(missing_ok=True)
     return 0
 
 
 def state():
     try:
         data = json.loads(STATE_PATH.read_text())
-        pid = int(data.get('pid', 0))
-        os.kill(pid, 0)
+        os.kill(int(data.get('pid', 0)), 0)
     except (OSError, ValueError):
         data = {'running': False}
     data['settings'] = load_settings()
-    data['bridge'] = bridge_installed()
+    data['enabled'] = bool(data['settings']['enabled'])
+    data['bridge'] = BRIDGE.is_dir()
     unit = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'systemd' / 'user' / 'xr-head-aim.service'
     data['installed'] = unit.exists()
     print(json.dumps(data))
-
-
-def tune(args):
-    if args == ['reset']:
-        atomic_json(SETTINGS_PATH, DEFAULTS)
-        return 0
-    settings = load_settings()
-    for arg in args:
-        key, sep, value = arg.partition('=')
-        if not sep or key not in DEFAULTS:
-            print(f'Unknown setting: {arg}', file=sys.stderr)
-            return 2
-        if key in NUMERIC:
-            try:
-                settings[key] = float(value) if isinstance(DEFAULTS[key], float) else int(float(value))
-            except ValueError:
-                print(f'{key} needs a number', file=sys.stderr)
-                return 2
-        elif key in CHOICES:
-            if value not in CHOICES[key]:
-                print(f"{key} must be one of: {', '.join(CHOICES[key])}", file=sys.stderr)
-                return 2
-            settings[key] = value
-        else:
-            settings[key] = [v for v in value.split(',') if v]
-    atomic_json(SETTINGS_PATH, settings)
     return 0
 
 
 def main(argv):
-    if argv[:1] == ['run']:
+    command = argv[0] if argv else ''
+    if command == 'run':
         return run()
-    if argv[:1] == ['state']:
+    if command == 'state':
         return state()
-    if argv[:1] == ['tune'] and len(argv) > 1:
+    if command in ('toggle', 'on', 'off'):
+        return switch(command)
+    if command == 'tune' and len(argv) > 1:
         return tune(argv[1:])
-    print(__doc__.split('\n\n')[2], file=sys.stderr)
+    print('\n'.join(l for l in __doc__.splitlines() if l.startswith('  xr_head_aim.py')), file=sys.stderr)
     return 2
 
 
